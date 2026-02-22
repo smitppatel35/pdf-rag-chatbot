@@ -15,7 +15,8 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough, RunnableParallel, RunnableLambda
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.callbacks import BaseCallbackHandler
-from langchain_ollama import OllamaLLM
+# LLM instances are shared from llm_models to avoid circular imports
+from llm_models import llama3_llm, gemma_llm, phi3_llm, AVAILABLE_MODELS, CHAT_MODELS
 
 from prompts import (
     CHAT_PROMPT_TEMPLATE,
@@ -32,15 +33,10 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 # ============================================================================
-# LLM INSTANCES
+# LLM INSTANCES (imported from ai_engine to avoid duplication)
 # ============================================================================
 
-# Initialize Ollama models (same as ai_engine.py)
-llama3_llm = OllamaLLM(model="llama3", temperature=0.1)
-gemma_llm = OllamaLLM(model="gemma", temperature=0.1)
-phi3_llm = OllamaLLM(model="phi3", temperature=0.1)
-
-# Model mapping
+# Model mapping (uses the shared instances imported above)
 AVAILABLE_MODELS = {
     "llama3": llama3_llm,
     "gemma": gemma_llm,
@@ -53,7 +49,7 @@ CHAT_MODELS = {
 }
 
 
-def get_llm(model_name: str = "llama3") -> OllamaLLM:
+def get_llm(model_name: str = "llama3"):
     """Get LLM instance by name."""
     return CHAT_MODELS.get(model_name, llama3_llm)
 
@@ -463,7 +459,7 @@ def create_multi_pdf_rag_chain_with_history(
                     collection_name=col_name,
                     search_kwargs={'k': k}
                 )
-                docs = retriever.get_relevant_documents(query)
+                docs = retriever.invoke(query)
                 if docs:
                     context = format_docs(docs)
                     all_contexts.append(f"Context from {col_name}:\n{context}")

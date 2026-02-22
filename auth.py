@@ -86,8 +86,17 @@ class UserRegisterResponse(BaseModel):
     username: str
 
 
-# Token refresh and verification endpoints have been removed because we
-# now rely on stateful sessions stored in the `sessions` collection.
+class UserLogoutRequest(BaseModel):
+    """Logout request — session_id in body, not query string"""
+    session_id: str
+
+
+class ChangePasswordRequest(BaseModel):
+    """Change password request body"""
+    session_id: str
+    old_password: str
+    new_password: str
+    confirm_password: str
 
 
 class UserProfileResponse(BaseModel):
@@ -358,8 +367,9 @@ async def login(request: UserLoginRequest):
 
 @router.post("/logout")
 @log_exceptions
-async def logout(session_id: str):
+async def logout(request: UserLogoutRequest):
     """Logout user and invalidate session"""
+    session_id = request.session_id
     logger.info(f"Logout attempt for session: {session_id}")
     
     try:
@@ -392,8 +402,9 @@ async def logout(session_id: str):
 
 @router.post("/logout-all")
 @log_exceptions
-async def logout_all(session_id: str):
+async def logout_all(request: UserLogoutRequest):
     """Logout from all devices (invalidate all user sessions)"""
+    session_id = request.session_id
     logger.info(f"Logout all attempt for session: {session_id}")
     
     try:
@@ -427,7 +438,8 @@ async def logout_all(session_id: str):
 @router.get("/profile", response_model=UserProfileResponse)
 @log_exceptions
 async def get_profile(session_id: str):
-    """Get user profile information"""
+    """Get user profile information — session_id passed as query param (GET request, no body).
+    For higher security, consider using an Authorization header instead."""
     logger.info(f"Profile request for session: {session_id}")
     
     try:
@@ -471,13 +483,12 @@ async def get_profile(session_id: str):
 
 @router.post("/change-password")
 @log_exceptions
-async def change_password(
-    session_id: str,
-    old_password: str,
-    new_password: str,
-    confirm_password: str
-):
+async def change_password(request: ChangePasswordRequest):
     """Change user password"""
+    session_id = request.session_id
+    old_password = request.old_password
+    new_password = request.new_password
+    confirm_password = request.confirm_password
     logger.info(f"Password change attempt for session: {session_id}")
     
     try:

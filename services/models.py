@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 from enum import Enum
@@ -19,12 +19,13 @@ class BaseRequest(BaseModel):
     chat_session_id: Optional[str] = Field(None, description="Chat session ID (alias for thread_id)")
     source_id: Optional[str] = Field(None, description="Source document ID")
     
-    @validator("thread_id", always=True, pre=True)
-    def populate_thread_id(cls, v, values):
+    @model_validator(mode="before")
+    @classmethod
+    def populate_thread_id(cls, values):
         """Use chat_session_id as thread_id if thread_id not provided"""
-        if v:
-            return v
-        return values.get("chat_session_id")
+        if not values.get("thread_id"):
+            values["thread_id"] = values.get("chat_session_id")
+        return values
 
 class ChatRequest(BaseModel):
     session_id: str
@@ -73,9 +74,10 @@ class WebSocketMessage(BaseModel):
     client_id: Optional[str] = None
     timestamp: datetime = Field(default_factory=datetime.utcnow)
 
-    @validator('data')
-    def validate_data(cls, v, values):
-        msg_type = values.get('type')
+    @field_validator('data', mode='before')
+    @classmethod
+    def validate_data(cls, v, info):
+        msg_type = info.data.get('type')
         if msg_type == MessageType.CHAT:
             if not v.get('user_input'):
                 raise ValueError("Chat messages must include user_input")
