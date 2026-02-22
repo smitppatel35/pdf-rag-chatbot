@@ -196,22 +196,41 @@ def get_session(session_id: str) -> Optional[Dict[str, Any]]:
     return active_sessions.get(session_id)
 
 
-def validate_session(session_id: str) -> Optional[str]:
-    """Validate session and return user_id if valid"""
+async def validate_session(session_id: str) -> Optional[str]:
+    """Validate session and return user_id if valid.
+
+    Checks in-memory cache first (fast path), then falls back to MongoDB.
+    This ensures sessions survive Lambda cold starts on Vercel.
+    """
+    # Fast path: in-memory cache
     session = active_sessions.get(session_id)
-    
-    if session is None:
-        logger.warning(f"Session not found: {session_id}")
-        return None
-    
-    if not session.get("active"):
-        logger.warning(f"Session is inactive: {session_id}")
-        return None
-    
-    # Update last activity
-    session["last_activity"] = datetime.utcnow().isoformat()
-    
-    return session.get("user_id")
+    if session is not None:
+        if not session.get("active"):
+            logger.warning(f"Session is inactive: {session_id}")
+            return None
+        session["last_activity"] = datetime.utcnow().isoformat()
+        return session.get("user_id")
+
+    # Slow path: look up in MongoDB (handles server restarts + Lambda cold starts)
+    logger.debug(f"Session not in memory, checking DB: {session_id[:20]}...")
+    try:
+        from db_manager import get_session as get_session_from_db
+        session_data = await get_session_from_db(session_id)
+        if session_data and session_data.get("user_id"):
+            # Re-populate in-memory cache for subsequent requests in same invocation
+            active_sessions[session_id] = {
+                "user_id": session_data["user_id"],
+                "active": True,
+                "created_at": session_data.get("created_at", datetime.utcnow().isoformat()),
+                "last_activity": datetime.utcnow().isoformat(),
+            }
+            logger.info(f"Session restored from DB: {session_id[:20]}...")
+            return session_data["user_id"]
+    except Exception as e:
+        logger.error(f"Error validating session from DB: {e}")
+
+    logger.warning(f"Session not found: {session_id}")
+    return None
 
 
 def invalidate_session(session_id: str) -> None:
@@ -402,7 +421,7 @@ async def logout(request: UserLogoutRequest):
     
     try:
         # Validate session exists
-        user_id = validate_session(session_id)
+        user_id = await validate_session(session_id)
         if not user_id:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -437,7 +456,7 @@ async def logout_all(request: UserLogoutRequest):
     
     try:
         # Validate session exists
-        user_id = validate_session(session_id)
+        user_id = await validate_session(session_id)
         if not user_id:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -472,7 +491,7 @@ async def get_profile(session_id: str):
     
     try:
         # Validate session
-        user_id = validate_session(session_id)
+        user_id = await validate_session(session_id)
         if not user_id:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -523,7 +542,7 @@ async def change_password(request: ChangePasswordRequest):
     
     try:
         # Validate session
-        user_id = validate_session(session_id)
+        user_id = await validate_session(session_id)
         if not user_id:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -603,7 +622,7 @@ async def update_profile(request: UserProfileUpdateRequest):
     logger.info(f"Profile update attempt for session: {session_id}")
     
     try:
-        user_id = validate_session(session_id)
+        user_id = await validate_session(session_id)
         if not user_id:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
