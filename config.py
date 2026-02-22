@@ -2,7 +2,7 @@ import logging
 import os
 from typing import Optional, List
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import validator, Field
+from pydantic import field_validator, Field
 
 logger = logging.getLogger(__name__)
 
@@ -217,7 +217,8 @@ class Settings(BaseSettings):
     # VALIDATORS
     # ========================================================================
     
-    @validator("ENVIRONMENT")
+    @field_validator("ENVIRONMENT")
+    @classmethod
     def validate_environment(cls, v):
         """Validate environment value"""
         allowed = ["development", "staging", "production"]
@@ -225,7 +226,8 @@ class Settings(BaseSettings):
             raise ValueError(f"ENVIRONMENT must be one of {allowed}")
         return v
     
-    @validator("LOG_LEVEL")
+    @field_validator("LOG_LEVEL")
+    @classmethod
     def validate_log_level(cls, v):
         """Validate log level"""
         allowed = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
@@ -233,21 +235,24 @@ class Settings(BaseSettings):
             raise ValueError(f"LOG_LEVEL must be one of {allowed}")
         return v.upper()
     
-    @validator("MAX_UPLOAD_SIZE_MB")
+    @field_validator("MAX_UPLOAD_SIZE_MB")
+    @classmethod
     def validate_upload_size(cls, v):
         """Validate upload size"""
         if v <= 0:
             raise ValueError("MAX_UPLOAD_SIZE_MB must be greater than 0")
         return v
     
-    @validator("CORS_ORIGINS", pre=True)
+    @field_validator("CORS_ORIGINS", mode="before")
+    @classmethod
     def validate_cors_origins(cls, v):
         """Parse CORS origins from string if needed"""
         if isinstance(v, str):
             return [origin.strip() for origin in v.split(",")]
         return v
     
-    @validator("CORS_METHODS", pre=True)
+    @field_validator("CORS_METHODS", mode="before")
+    @classmethod
     def validate_cors_methods(cls, v):
         """Parse CORS methods from string if needed"""
         if isinstance(v, str):
@@ -256,7 +261,8 @@ class Settings(BaseSettings):
             return [method.strip() for method in v.split(",")]
         return v
     
-    @validator("CORS_HEADERS", pre=True)
+    @field_validator("CORS_HEADERS", mode="before")
+    @classmethod
     def validate_cors_headers(cls, v):
         """Parse CORS headers from string if needed"""
         if isinstance(v, str):

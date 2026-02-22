@@ -48,7 +48,17 @@ class MongoDBManager:
 
         logger.info(f"Connecting to MongoDB at {mongo_uri} (async)")
         try:
-            self._client = AsyncIOMotorClient(mongo_uri)
+            # On Windows with Python 3.11+, MongoDB Atlas SSL handshakes can fail due to
+            # OpenSSL TLS version compatibility issues. Pass tlsAllowInvalidCertificates=True
+            # as a Motor kwarg (the URI param is silently ignored for mongodb+srv connections).
+            import os as _os
+            is_dev = _os.getenv("ENVIRONMENT", "development") == "development"
+            client_kwargs = {}
+            if is_dev and mongo_uri.startswith("mongodb+srv://"):
+                client_kwargs["tlsAllowInvalidCertificates"] = True
+                logger.debug("Development mode: TLS certificate validation disabled for Atlas connection")
+
+            self._client = AsyncIOMotorClient(mongo_uri, **client_kwargs)
             # Motor does not require explicit ping to construct client, but test the connection
             await self._client.admin.command("ping")
             logger.info("MongoDB async connection successful")
@@ -58,6 +68,7 @@ class MongoDBManager:
         except Exception as e:
             logger.error(f"Failed to connect to MongoDB (async): {e}")
             raise
+
 
     async def _initialize_collections(self):
         """Create collections and set up indexes (async)"""

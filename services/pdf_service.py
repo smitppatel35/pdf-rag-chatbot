@@ -14,7 +14,11 @@ from db_manager import (
     add_filename_to_uploaded_list,
     update_chat_session_field,
     get_chat_session_by_id,
-    create_chat_session_in_db
+    create_chat_session_in_db,
+    get_user_chat_session_list,
+    get_user_chat_session_count,
+    mark_chat_session_as_deleted,
+    rename_chat_session_title
 )
 from auth import active_sessions
 import uuid
@@ -76,14 +80,30 @@ async def get_chat_session(
         if not chat_session_data:
             raise ThreadNotFoundError()
         
+        # Strip non-serialisable MongoDB _id
+        chat_session_data.pop("_id", None)
+
         return JSONResponse(
             status_code=200,
             content={
                 "chat_session_id": chat_session_id,
                 "title": chat_session_data.get("title", "New Chat"),
                 "created_at": chat_session_data.get("created_at"),
+                "updated_at": chat_session_data.get("updated_at"),
+                "messages": chat_session_data.get("messages", []),
+                "sources": [
+                    {
+                        "source_id": s.get("source_id"),
+                        "filename": s.get("filename"),
+                        "filepath": s.get("filepath"),
+                        "uploaded_at": s.get("uploaded_at"),
+                        "related_questions": s.get("related_questions", []),
+                        "mindmap": s.get("mindmap"),
+                    }
+                    for s in chat_session_data.get("sources", [])
+                ],
                 "message_count": len(chat_session_data.get("messages", [])),
-                "source_count": len(chat_session_data.get("sources", []))
+                "source_count": len(chat_session_data.get("sources", [])),
             }
         )
     except ThreadNotFoundError:
@@ -164,3 +184,59 @@ async def upload_pdf(
     except Exception as e:
         logger.error(f"PDF upload error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+
+
+@router.get("/sessions")
+@log_exceptions
+async def get_all_sessions(
+    session_id: str,
+    limit: int = 50,
+):
+    """Get all chat sessions for the authenticated user, sorted by most recent."""
+    user_id = await validate_session(session_id, active_sessions)
+    sessions = await get_user_chat_session_list(user_id, limit=limit)
+    total = await get_user_chat_session_count(user_id)
+
+    for s in sessions:
+        s.pop("_id", None)
+
+    return {
+        "sessions": sessions,
+        "total": total,
+        "limit": limit,
+    }
+
+
+@router.delete("/session/{chat_session_id}")
+@log_exceptions
+async def delete_chat_session(
+    chat_session_id: str,
+    session_id: str,
+):
+    """Soft-delete a chat session (marks as deleted, data is retained)."""
+    user_id = await validate_session(session_id, active_sessions)
+    chat_session = await get_chat_session_by_id(chat_session_id, user_id)
+    if not chat_session:
+        raise HTTPException(status_code=404, detail="Chat session not found")
+
+    await mark_chat_session_as_deleted(chat_session_id)
+    logger.info(f"Chat session deleted: {chat_session_id} by user: {user_id}")
+    return {"message": "Chat session deleted successfully", "chat_session_id": chat_session_id}
+
+
+@router.patch("/session/{chat_session_id}/rename")
+@log_exceptions
+async def rename_session(
+    chat_session_id: str,
+    session_id: str,
+    new_title: str,
+):
+    """Rename a chat session."""
+    user_id = await validate_session(session_id, active_sessions)
+    chat_session = await get_chat_session_by_id(chat_session_id, user_id)
+    if not chat_session:
+        raise HTTPException(status_code=404, detail="Chat session not found")
+
+    await rename_chat_session_title(chat_session_id, new_title)
+    logger.info(f"Chat session renamed: {chat_session_id} -> '{new_title}'")
+    return {"message": "Session renamed successfully", "chat_session_id": chat_session_id, "new_title": new_title}

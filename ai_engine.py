@@ -7,6 +7,7 @@ from langchain_core.documents import Document
 from langchain_community.document_loaders import PyMuPDFLoader
 
 from langchain_ollama import OllamaLLM
+from llm_models import llama3_llm, gemma_llm, phi3_llm, AVAILABLE_MODELS, CHAT_MODELS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from prompts import (
     SYSTEM_PROMPT,
@@ -46,23 +47,9 @@ text_splitter = RecursiveCharacterTextSplitter(
     separators=["\n\n", "\n", ". ", " ", ""]
 )
 
-# --- Ollama Local Models ---
-llama3_llm = OllamaLLM(model="llama3", temperature=0.1)
-gemma_llm = OllamaLLM(model="gemma", temperature=0.1)
-phi3_llm = OllamaLLM(model="phi3", temperature=0.1)
+# Available model instances are imported from llm_models.py (shared module)
+# to avoid circular imports with chains.py which also imports from here.
 
-# Available models mapping
-AVAILABLE_MODELS = {
-    "llama3": llama3_llm,
-    "gemma": gemma_llm,
-    "phi3": phi3_llm
-}
-
-# Chat models only (phi3 reserved for podcast generation)
-CHAT_MODELS = {
-    "llama3": llama3_llm,
-    "gemma": gemma_llm
-}
 
 def get_available_models() -> List[str]:
     """Return list of available chat model names (excludes phi3 which is for podcasts)"""

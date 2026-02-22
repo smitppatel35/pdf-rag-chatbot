@@ -1,42 +1,41 @@
-# Core libraries
+# Core RAG & LLM libraries
 langchain>=0.1.14
 langchain-core>=0.1.7
 langchain-community>=0.0.24
 langchain-ollama>=0.0.6
+langchain-text-splitters
 
 # Embeddings
 sentence-transformers>=2.2.2
 
 # Vector store
-faiss-cpu>=1.7.4
+chromadb
+langchain_chroma
+langchain_huggingface
 
 # PDF parsing
-pdfplumber>=0.10.0
 PyMuPDF>=1.23.6
 pypdf>=3.17.0
-
-# Image processing
-Pillow>=10.0.0
 
 # FastAPI & server
 fastapi>=0.110.0
 uvicorn>=0.29.0
+python-multipart
 
-# Data handling
-pandas>=2.2.2
+# Database
+motor
+langchain_mongodb
 
-# Optional: OCR
-pytesseract>=0.3.10
+# Authentication
+bcrypt
+pydantic[email]
+pydantic-settings
 
-# Other tools (remove if not used)
+# Utilities
 rich>=13.7.0
 
-# Remove unused or ambiguous packages:
-# unstructured
-# unstructured_inference
-# pdfminer
-# pi_heif
-# pdf2image
-# fitz (use PyMuPDF instead)
-# frontend
-# tools
+pymongo[srv]
+
+# Planned features (podcast/TTS — uncomment when implementing)
+# Pillow>=10.0.0
+# pytesseract>=0.3.10

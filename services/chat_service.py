@@ -11,7 +11,10 @@ from db_manager import (
     add_turn_to_general_chat,
     add_turn_to_multi_source_chat,
     add_question_to_source,
-    get_chat_session_by_id
+    get_chat_session_by_id,
+    get_chat_messages,
+    get_user_chat_session_list,
+    get_user_chat_session_count
 )
 from ai_engine import (
     chat_completion_LlamaModel_ws,
@@ -20,8 +23,8 @@ from ai_engine import (
     chat_completion_with_multiple_pdfs_ws,
     get_available_models,
     generate_chat_title,
-    HISTORY_LENGTH
 )
+from prompts import HISTORY_LENGTH
 from callbacks import (
     create_callback_manager,
     PerformanceCallbackHandler,
@@ -41,7 +44,7 @@ def process_chat_completion(
     active_source_ids: List[str],
     settings: Settings,
     model: Optional[str] = None
-) -> AsyncGenerator[Tuple[Optional[str], Optional[str]], None]:
+):
     """Select correct ai_engine async-generator based on context and requested model.
 
     - If one or more PDFs selected -> use RAG functions (llama3 RAG).
@@ -201,10 +204,63 @@ async def send_chat(
 
 @router.get("/models")
 @log_exceptions
-async def list_available_models():
-    """Get list of available chat models"""
+async def get_available_models_endpoint():
+    """List available LLM models for chat"""
     models = get_available_models()
+    return {"models": models}
+
+
+@router.get("/sessions")
+@log_exceptions
+async def get_chat_sessions(
+    session_id: str,
+    limit: int = 50,
+):
+    """Get all chat sessions for the authenticated user, sorted by most recent."""
+    user_id = await validate_session(session_id, active_sessions)
+    sessions = await get_user_chat_session_list(user_id, limit=limit)
+    total = await get_user_chat_session_count(user_id)
+
+    # Strip MongoDB _id (not JSON serialisable)
+    for s in sessions:
+        s.pop("_id", None)
+
     return {
-        "models": models,
-        "default": "llama3"
+        "sessions": sessions,
+        "total": total,
+        "limit": limit,
+    }
+
+
+@router.get("/history/{chat_session_id}")
+@log_exceptions
+async def get_chat_history(
+    chat_session_id: str,
+    session_id: str,
+    limit: int = 50,
+):
+    """Get paginated message history for a specific chat session."""
+    user_id = await validate_session(session_id, active_sessions)
+
+    # Verify the session belongs to this user
+    chat_session = await get_chat_session_by_id(chat_session_id, user_id)
+    if not chat_session:
+        raise HTTPException(status_code=404, detail="Chat session not found")
+
+    messages = await get_chat_messages(chat_session_id, limit=limit)
+
+    return {
+        "chat_session_id": chat_session_id,
+        "title": chat_session.get("title", "New Chat"),
+        "messages": messages,
+        "total": len(messages),
+        "limit": limit,
+        "sources": [
+            {
+                "source_id": s.get("source_id"),
+                "filename": s.get("filename"),
+                "uploaded_at": s.get("uploaded_at"),
+            }
+            for s in chat_session.get("sources", [])
+        ],
     }
