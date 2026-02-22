@@ -177,15 +177,21 @@ async def create_session(user_id: str) -> str:
         "active": True
     }
     
-    # Store in memory for fast access
-    active_sessions[session_id] = session_data
-    
-    # Store in database for persistence (non-blocking)
+    # Store in database FIRST — on Vercel Lambda, in-memory state doesn't
+    # survive across requests, so the DB record is the source of truth.
     try:
-        # db_manager.create_session is async (Motor) so call directly
         await create_session_in_db(session_data)
     except Exception as e:
-        logger.error(f"Failed to store session in database: {e}")
+        logger.error(f"CRITICAL: Failed to persist session to database: {e}", exc_info=True)
+        # Don't return a session that only lives in memory — it would
+        # immediately 401 on the next request (new Lambda invocation).
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Login failed: could not create session. Please try again."
+        )
+    
+    # Also cache in memory for the duration of this Lambda invocation (fast path)
+    active_sessions[session_id] = session_data
     
     logger.info(f"Session created: {session_id} for user: {user_id}")
     return session_id

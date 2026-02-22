@@ -153,10 +153,28 @@ class MongoDBManager:
 
     @property
     def db(self):
-        """Get database instance"""
+        """Get database instance, auto-connecting if necessary.
+
+        On Vercel Lambda, the lifespan event may not fire before the first
+        request. This property ensures the DB is always available.
+        """
         if self._db is None:
-            raise RuntimeError("Database not initialized. Call __init__ first.")
+            raise RuntimeError(
+                "Database not initialized. Call connect() first "
+                "(this should happen in the app lifespan startup)."
+            )
         return self._db
+
+    async def ensure_connected(self) -> None:
+        """Connect to MongoDB if not already connected (idempotent)."""
+        if not self._initialized:
+            import os
+            mongo_uri = os.getenv("MONGODB_URI")
+            db_name = os.getenv("MONGODB_DB_NAME", "chatbot")
+            if mongo_uri:
+                await self.connect(mongo_uri, db_name)
+            else:
+                raise RuntimeError("MONGODB_URI not set — cannot connect to database")
 
     async def close(self):
         """Close MongoDB connection (async)"""

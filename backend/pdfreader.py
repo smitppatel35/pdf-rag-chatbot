@@ -21,6 +21,16 @@ init_from_settings()
 logger = get_logger(__name__)
 settings = get_settings()
 
+
+async def ensure_db():
+    """FastAPI dependency: guarantees MongoDB is connected before each request.
+
+    Vercel Lambda cold starts don't always fire lifespan startup events
+    before the first request — this dependency is the safety net.
+    """
+    await _db_manager.ensure_connected()
+
+
 # Lifespan: handles both startup AND shutdown
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -49,7 +59,8 @@ app = FastAPI(
     title="PDF Reader",
     description="Local PDF RAG Bot with Chat, Mindmap, and Podcast features",
     version="1.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
+    dependencies=[Depends(ensure_db)]   # ← applied globally to ALL routes
 )
 
 # Add CORS middleware — origins are configured via CORS_ORIGINS in .env
