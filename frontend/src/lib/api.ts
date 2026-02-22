@@ -20,8 +20,19 @@ export interface ChatSession {
     updated_at?: string;
 }
 
+// Redirect to login on 401 — clears stale session from localStorage
+const handleUnauthorized = () => {
+    localStorage.removeItem("session_id");
+    window.location.href = "/login";
+};
+
 // Ensure error handling is robust
 const handleResponse = async (response: Response) => {
+    if (response.status === 401) {
+        handleUnauthorized();
+        // Return a never-resolving promise so the calling code doesn't proceed
+        return new Promise(() => { }) as Promise<never>;
+    }
     if (!response.ok) {
         let errorMsg = response.statusText;
         try {
@@ -57,12 +68,29 @@ export const api = {
         return handleResponse(res);
     },
 
-    // Logout now takes session_id in JSON body (not query param)
     async logout(sessionId: string) {
         const res = await fetch('/api/auth/logout', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ session_id: sessionId })
+        });
+        return handleResponse(res);
+    },
+
+    async getProfile(sessionId: string) {
+        const res = await fetch(`/api/auth/profile?session_id=${encodeURIComponent(sessionId)}`);
+        return handleResponse(res);
+    },
+
+    async updateProfile(sessionId: string, openaiApiKey?: string, geminiApiKey?: string) {
+        const res = await fetch('/api/auth/profile', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                session_id: sessionId,
+                openai_api_key: openaiApiKey,
+                gemini_api_key: geminiApiKey
+            })
         });
         return handleResponse(res);
     },

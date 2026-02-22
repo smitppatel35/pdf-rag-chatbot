@@ -6,8 +6,7 @@ from typing import List, Dict, AsyncGenerator, Optional, Tuple
 from langchain_core.documents import Document
 from langchain_community.document_loaders import PyMuPDFLoader
 
-from langchain_ollama import OllamaLLM
-from llm_models import llama3_llm, gemma_llm, phi3_llm, AVAILABLE_MODELS, CHAT_MODELS
+from llm_models import AVAILABLE_MODELS, CHAT_MODELS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from prompts import (
     SYSTEM_PROMPT,
@@ -52,16 +51,12 @@ text_splitter = RecursiveCharacterTextSplitter(
 
 
 def get_available_models() -> List[str]:
-    """Return list of available chat model names (excludes phi3 which is for podcasts)"""
+    """Return list of available chat model names"""
     return list(CHAT_MODELS.keys())
 
 def get_model_llm(model_name: str):
-    """Get LLM instance by model name, defaults to llama3"""
-    return CHAT_MODELS.get(model_name, llama3_llm)
-
-def get_podcast_model():
-    """Get the dedicated podcast generation model (phi3)"""
-    return phi3_llm
+    """Get LLM instance by model name"""
+    return CHAT_MODELS.get(model_name)
 
 # --- Podcast prompt (moved) ---
 # The PODCAST_SCRIPT_PROMPT_TEMPLATE used to live here but was moved to `prompts.py`
@@ -114,61 +109,57 @@ def estimate_podcast_generation_time(mindmap_md: str) -> int:
     return final_time
 
 # --- RAG Helper Functions ---
-def _get_collection_name(pdf_path: str) -> str:
-    """Generate a collection name from PDF path (use source_id or sanitized filename)."""
-    # Use basename without extension as collection name
+def _get_source_id_from_path(pdf_path: str) -> str:
+    """Generate a source ID from PDF path (fallback if not provided)."""
     basename = os.path.splitext(os.path.basename(pdf_path))[0]
-    # Sanitize: replace non-alphanumeric with underscore
-    sanitized = ''.join(c if c.isalnum() else '_' for c in basename)
-    # ChromaDB collection names must be 3-63 chars, start/end with alphanumeric
-    collection_name = sanitized[:63].strip('_')
-    if len(collection_name) < 3:
-        collection_name = f"pdf_{collection_name}"
-    return collection_name
+    return basename
 
-def _load_and_store_pdf(pdf_path: str) -> str:
+async def _load_and_store_pdf(pdf_path: str, source_id: Optional[str] = None) -> str:
     """
-    Load PDF using PyMuPDFLoader, chunk it, and store in ChromaDB.
-    Returns collection name.
+    Load PDF using PyMuPDFLoader, chunk it, and store in MongoDB Atlas Vector Search.
+    Returns source_id.
     """
-    collection_name = _get_collection_name(pdf_path)
+    if not source_id:
+        source_id = _get_source_id_from_path(pdf_path)
     
     # Check if already processed
-    if vectorstore_mgr.collection_exists(collection_name):
-        doc_count = vectorstore_mgr.get_collection_count(collection_name)
+    if await vectorstore_mgr.source_exists(source_id):
+        doc_count = await vectorstore_mgr.get_source_document_count(source_id)
         if doc_count > 0:
-            logger.info(f"PDF already in ChromaDB: {collection_name} ({doc_count} chunks)")
-            return collection_name
+            logger.info(f"PDF already in MongoDB Vector Search: {source_id} ({doc_count} chunks)")
+            return source_id
     
     # Load PDF with PyMuPDFLoader
+    # In an async context, we use run_in_executor for heavy synchronous parsing
+    loop = asyncio.get_running_loop()
     loader = PyMuPDFLoader(pdf_path)
-    documents = loader.load()
+    documents = await loop.run_in_executor(None, loader.load)
     
     if not documents:
         logger.error(f"PyMuPDFLoader returned no documents for: {pdf_path}")
         raise ValueError(f"No content extracted from PDF: {pdf_path}")
     
     # Split documents into chunks
-    chunks = text_splitter.split_documents(documents)
+    chunks = await loop.run_in_executor(None, text_splitter.split_documents, documents)
     
     if not chunks:
         logger.error(f"No chunks created from PDF: {pdf_path}")
         raise ValueError(f"No text chunks extracted from PDF: {pdf_path}")
     
-    # Store in ChromaDB
-    vectorstore_mgr.add_documents(chunks, collection_name)
-    logger.info(f"Stored {len(chunks)} chunks in ChromaDB collection: {collection_name}")
+    # Store in MongoDB Atlas Vector Search
+    await vectorstore_mgr.add_documents(chunks, source_id=source_id)
+    logger.info(f"Stored {len(chunks)} chunks in MongoDB for source: {source_id}")
     
-    return collection_name
+    return source_id
 
-def _retrieve_context(query: str, collection_name: str, k: int = 3) -> str:
+async def _retrieve_context(query: str, source_id: str, k: int = 3) -> str:
     """
-    Retrieve relevant context from ChromaDB for a query.
+    Retrieve relevant context from MongoDB Vector Search for a query.
     Returns formatted context string.
     """
-    results = vectorstore_mgr.similarity_search_with_score(
+    results = await vectorstore_mgr.similarity_search_with_score(
         query=query,
-        collection_name=collection_name,
+        source_id=source_id,
         k=k
     )
     
@@ -183,6 +174,36 @@ def _retrieve_context(query: str, collection_name: str, k: int = 3) -> str:
     return "\n\n--\n\n".join(context_parts)
 
 # --- Chat Functions (LCEL-based) ---
+async def _get_api_keys_for_session(session_id: Optional[str]) -> dict:
+    """Resolve API keys for the session.
+
+    Priority:
+      1. User's own keys (stored in their profile)
+      2. Fallback env vars: OPENAI_API_KEY and GEMINI_API_KEY
+    """
+    from auth import validate_session
+    from db_manager import get_user_by_id
+
+    # Fallback keys from environment (server-level)
+    fallback_openai = os.getenv("OPENAI_API_KEY")
+    fallback_gemini = os.getenv("GEMINI_API_KEY")
+
+    user_openai = None
+    user_gemini = None
+
+    if session_id:
+        user_id = validate_session(session_id)
+        if user_id:
+            user = await get_user_by_id(user_id)
+            if user:
+                user_openai = user.get("openai_api_key") or None
+                user_gemini = user.get("gemini_api_key") or None
+
+    return {
+        "openai": user_openai or fallback_openai,
+        "gemini": user_gemini or fallback_gemini,
+    }
+
 async def chat_completion_LlamaModel_ws(
     text: str,
     history: List[Dict[str, str]],
@@ -192,13 +213,14 @@ async def chat_completion_LlamaModel_ws(
     logger.info(f"Initiating Standard Llama3 WS completion (LCEL) for text: '{text[:50]}...'")
     try:
         # Create chain with or without history based on session_id
+        api_keys = await _get_api_keys_for_session(session_id) if session_id else {}
         if session_id:
-            chain = create_chat_chain_with_history(model_name="llama3", session_id=session_id)
+            chain = create_chat_chain_with_history(model_name="llama3", api_keys=api_keys, session_id=session_id)
             chain_input = {"input": text, "session_id": session_id}
         else:
             # For backward compatibility, use chain without session
             from chains import create_chat_chain
-            chain = create_chat_chain(model_name="llama3")
+            chain = create_chat_chain(model_name="llama3", api_keys=api_keys)
             chain_input = {"input": text, "chat_history": history[-(HISTORY_LENGTH * 2):]}
         
         # Stream response using LCEL
@@ -237,12 +259,13 @@ async def chat_completion_Gemma_ws(
     """Chat completion using LCEL chain with Gemma model."""
     logger.info(f"Initiating Gemma WS completion (LCEL) for text: '{text[:50]}...'")
     try:
+        api_keys = await _get_api_keys_for_session(session_id) if session_id else {}
         if session_id:
-            chain = create_chat_chain_with_history(model_name="gemma", session_id=session_id)
+            chain = create_chat_chain_with_history(model_name="gemma", api_keys=api_keys, session_id=session_id)
             chain_input = {"input": text, "session_id": session_id}
         else:
             from chains import create_chat_chain
-            chain = create_chat_chain(model_name="gemma")
+            chain = create_chat_chain(model_name="gemma", api_keys=api_keys)
             chain_input = {"input": text, "chat_history": history[-(HISTORY_LENGTH * 2):]}
         
         full_response = ""
@@ -286,21 +309,23 @@ async def chat_completion_with_pdf_ws(
             yield None, f"The associated document could not be found."
             return
         
-        # Load and store PDF in ChromaDB (idempotent)
+        # Load and store PDF in MongoDB Vector Search (idempotent)
         try:
-            collection_name = await asyncio.to_thread(_load_and_store_pdf, pdf_path)
+            source_id = await _load_and_store_pdf(pdf_path)
         except Exception as e:
-            logger.error(f"Failed to process PDF for ChromaDB: {e}")
+            logger.error(f"Failed to process PDF for MongoDB: {e}")
             yield None, "The associated document could not be processed for context (empty content)."
             return
         
         # Create RAG chain with or without history
         try:
+            api_keys = await _get_api_keys_for_session(session_id) if session_id else {}
             if session_id:
                 chain = create_rag_chain_with_history(
-                    collection_name=collection_name,
+                    source_id=source_id,
                     session_id=session_id,
                     model_name=model,
+                    api_keys=api_keys,
                     k=3
                 )
                 chain_input = {"input": text}
@@ -308,8 +333,9 @@ async def chat_completion_with_pdf_ws(
                 # Backward compatibility - no session
                 from chains import create_rag_chain
                 chain = create_rag_chain(
-                    collection_name=collection_name,
+                    source_id=source_id,
                     model_name=model,
+                    api_keys=api_keys,
                     k=3
                 )
                 chain_input = text
@@ -342,44 +368,48 @@ async def chat_completion_with_multiple_pdfs_ws(
     text: str,
     history: List[Dict[str, str]],
     pdf_paths: List[str],
+    model: str = "llama3",
     session_id: Optional[str] = None
 ) -> AsyncGenerator[Tuple[Optional[str], Optional[str]], None]:
     """Multi-PDF RAG completion using LCEL chain."""
     logger.info(f"Initiating Multi-PDF RAG (LCEL) for text: {text[:50]}... on {len(pdf_paths)} documents.")
     try:
-        # Load and store all PDFs, collect collection names
-        collection_names = []
+        # Load and store all PDFs, collect source IDs
+        source_ids = []
         for pdf_path in pdf_paths:
             if not pdf_path or not os.path.exists(pdf_path):
                 logger.warning(f"skipping non-existent PDF for multi-RAG: {pdf_path}")
                 continue
             
             try:
-                collection_name = await asyncio.to_thread(_load_and_store_pdf, pdf_path)
-                collection_names.append(collection_name)
+                source_id = await _load_and_store_pdf(pdf_path)
+                source_ids.append(source_id)
             except Exception as e:
                 logger.error(f"Failed to process PDF {pdf_path}: {e}", exc_info=True)
                 continue
         
-        if not collection_names:
+        if not source_ids:
             yield None, "No valid documents could be processed for context."
             return
         
         # Create multi-PDF RAG chain
         try:
+            api_keys = await _get_api_keys_for_session(session_id) if session_id else {}
             if session_id:
                 chain = create_multi_pdf_rag_chain_with_history(
-                    collection_names=collection_names,
+                    source_ids=source_ids,
                     session_id=session_id,
-                    model_name="llama3",
+                    model_name=model,
+                    api_keys=api_keys,
                     k=2
                 )
                 chain_input = {"input": text}
             else:
                 from chains import create_multi_pdf_rag_chain
                 chain = create_multi_pdf_rag_chain(
-                    collection_names=collection_names,
-                    model_name="llama3",
+                    source_ids=source_ids,
+                    model_name=model,
+                    api_keys=api_keys,
                     k=2
                 )
                 chain_input = text
@@ -524,4 +554,4 @@ async def generate_chat_title(messages_for_title_generation: List[Dict[str, str]
 
 # Prompt constants are imported from prompts.py at the top of this file
 
-logger.info("ai_engine.py loaded with local Ollama models: llama3, gemma, phi3.")
+logger.info("ai_engine.py loaded — cloud models: gpt-4o-mini, gemini-1.5-flash")

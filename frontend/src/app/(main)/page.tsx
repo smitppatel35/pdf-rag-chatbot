@@ -22,6 +22,8 @@ export default function Home() {
     handleFileUpload,
     handleSendMessage,
     handleKeyDown,
+    hasApiKey,
+    isProfileLoaded,
   } = useChatSession();
 
   if (isInitializing) {
@@ -56,6 +58,8 @@ export default function Home() {
         isGenerating={isGenerating}
         isUploading={isUploading}
         isLoadingHistory={isLoadingHistory}
+        hasApiKey={hasApiKey}
+        isProfileLoaded={isProfileLoaded}
       />
     </div>
   );

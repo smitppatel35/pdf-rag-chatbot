@@ -84,13 +84,13 @@ This chatbot allows users to:
                               ⬇
 ┌─────────────────────────────────────────────────────────────────┐
 │                      External Systems                           │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐            │
-│  │  MongoDB    │  │  ChromaDB   │  │ Ollama LLMs │            │
-│  │             │  │             │  │             │            │
-│  │ •Users      │  │ •Embeddings │  │ •llama3     │            │
-│  │ •Sessions   │  │ •Vectors    │  │ •gemma      │            │
-│  │ •Chat Hist. │  │ •Documents  │  │ •phi3       │            │
-│  └─────────────┘  └─────────────┘  └─────────────┘            │
+│  ┌─────────────┐  ┌───────────────┐  ┌─────────────┐            │
+│  │  MongoDB    │  │ MongoDB Atlas │  │ Ollama LLMs │            │
+│  │             │  │ Vector Search │  │             │            │
+│  │ •Users      │  │ •Embeddings   │  │ •llama3     │            │
+│  │ •Sessions   │  │ •Chunks       │  │ •gemma      │            │
+│  │ •Chat Hist. │  │ •Index        │  │ •phi3       │            │
+│  └─────────────┘  └───────────────┘  └─────────────┘            │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -163,7 +163,7 @@ Organized in [services/](services/) directory:
   - Chat session tracking
   - Async Motor client
 
-- **[vectorstore_manager.py](vectorstore_manager.py)**: ChromaDB operations
+- **[vectorstore_manager.py](vectorstore_manager.py)**: MongoDB Vector Search operations
   - Document embedding & storage
   - Similarity search
   - Collection management
@@ -189,7 +189,7 @@ Organized in [services/](services/) directory:
 ### Core Features
 - ✅ **Multi-user authentication** with session-based auth
 - ✅ **PDF upload & processing** with PyMuPDF
-- ✅ **Semantic search** using ChromaDB + HuggingFace embeddings
+- ✅ **Semantic search** using MongoDB Atlas Vector Search + HuggingFace embeddings
 - ✅ **RAG (Retrieval-Augmented Generation)** with context-aware responses
 - ✅ **Multi-document RAG** - Query across multiple PDFs
 - ✅ **Conversation history** persisted in MongoDB
@@ -221,12 +221,11 @@ Organized in [services/](services/) directory:
 ### AI & ML
 - **Ollama** - Local LLM runtime (llama3, gemma, phi3)
 - **HuggingFace Transformers** - Embeddings (all-MiniLM-L6-v2)
-- **ChromaDB** - Vector database
 - **sentence-transformers** - Semantic embeddings
 
 ### Databases
 - **MongoDB** (Motor) - User data, sessions, chat history
-- **ChromaDB** - Vector embeddings and documents
+- **MongoDB Atlas Vector Search** - Vector embeddings and documents
 
 ### PDF Processing
 - **PyMuPDF (fitz)** - PDF parsing and text extraction
@@ -273,11 +272,12 @@ Create a `.env` file in the project root:
 
 ```env
 # MongoDB Configuration
-MONGODB_URI=mongodb://localhost:27017/chatbot
+MONGODB_URI=mongodb+srv://<user>:<password>@cluster0...
 MONGODB_DB_NAME=pdf_rag_chatbot
 
-# ChromaDB Configuration
-CHROMA_PERSIST_DIR=./chroma_db
+# Vector Search Configuration
+MONGODB_VECTOR_INDEX_NAME=vector_index
+MONGODB_VECTOR_COLLECTION=pdf_vectors
 EMBEDDING_MODEL_NAME=all-MiniLM-L6-v2
 
 # Server Configuration
@@ -292,11 +292,34 @@ LOG_TO_FILE=True
 LOG_DIR=./logs
 ```
 
-### 5. Start MongoDB
-```bash
-# Make sure MongoDB is running
-mongod --dbpath /path/to/data
+### 5. Create MongoDB Vector Search Index
+RAG operations will fail unless you create the Atlas Vector Search Index exactly like this in your MongoDB Atlas Dashboard:
+
+1. Go to **Atlas Search** -> **Create Search Index**.
+2. Select **Atlas Vector Search** (Data Architecture / Index Type).
+3. Select **JSON Editor**.
+4. Choose database `pdf_rag_chatbot` and collection `pdf_vectors`.
+5. Name the index `vector_index`.
+6. Paste the following JSON mapping:
+
+```json
+{
+  "fields": [
+    {
+      "numDimensions": 384,
+      "path": "embedding",
+      "similarity": "cosine",
+      "type": "vector"
+    },
+    {
+      "path": "source_id",
+      "type": "filter"
+    }
+  ]
+}
 ```
+
+Wait until the index status says **Active**.
 
 ### 6. Run Backend Server
 ```bash
@@ -311,6 +334,14 @@ reflex run
 ```
 Frontend starts at: **http://localhost:3000**
 
+### 8. (Optional) Run via Docker
+To run a production-ready containerized backend (stateless for Google Cloud Run):
+```bash
+docker build -t pdf-rag-backend .
+docker run -p 8080:8080 --env-file .env pdf-rag-backend
+```
+Server starts at: **http://localhost:8080**
+
 ---
 
 ## 📂 Project Structure
@@ -324,7 +355,7 @@ pdf-rag-chatbot-v1/
 ├── callbacks.py              # Observability callbacks
 ├── output_parsers.py         # Structured output parsing
 ├── memory_manager.py         # Conversation history management
-├── vectorstore_manager.py    # ChromaDB vector store operations
+├── vectorstore_manager.py    # MongoDB Vector Search operations
 ├── db_manager.py             # MongoDB database operations
 ├── auth.py                   # Authentication & session management
 ├── config.py                 # Configuration management
@@ -345,7 +376,6 @@ pdf-rag-chatbot-v1/
 │   │   └── app.py            # Main Reflex UI
 │   └── rxconfig.py           # Reflex configuration
 │
-├── chroma_db/                # ChromaDB persistent storage (auto-created)
 ├── logs/                     # Application logs (auto-created)
 ├── uploaded_pdfs/            # Uploaded PDF files (auto-created)
 └── uploads/                  # User-specific uploads (auto-created)
@@ -361,8 +391,7 @@ User → PDF Service → ai_engine.load_and_store_pdf()
                    → PyMuPDF (extract text)
                    → Text Splitter (chunking)
                    → HuggingFace Embeddings
-                   → ChromaDB (store vectors)
-                   → MongoDB (store metadata)
+                   → MongoDB Atlas Vector Search (store vectors & metadata)
 ```
 
 ### Chat Query Flow (RAG)
@@ -419,9 +448,10 @@ User → Chat Service → ai_engine.chat_with_multiple_pdfs()
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MONGODB_URI` | `mongodb://localhost:27017/chatbot` | MongoDB connection string |
+| `MONGODB_URI` | `mongodb+srv://...` | MongoDB connection string |
 | `MONGODB_DB_NAME` | `pdf_rag_chatbot` | MongoDB database name |
-| `CHROMA_PERSIST_DIR` | `./chroma_db` | ChromaDB storage directory |
+| `MONGODB_VECTOR_INDEX_NAME` | `vector_index` | MongoDB Atlas Search Index Name |
+| `MONGODB_VECTOR_COLLECTION` | `pdf_vectors` | Collection name for chunks |
 | `EMBEDDING_MODEL_NAME` | `all-MiniLM-L6-v2` | HuggingFace embedding model |
 | `HOST` | `0.0.0.0` | Server host |
 | `PORT` | `8000` | Server port |

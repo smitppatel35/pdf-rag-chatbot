@@ -44,6 +44,8 @@ class UserRegisterRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=50)
     password: str = Field(..., min_length=8, max_length=128)
     confirm_password: str = Field(..., min_length=8, max_length=128)
+    openai_api_key: Optional[str] = None
+    gemini_api_key: Optional[str] = None
 
     # Pydantic v2: use field_validator for single-field validation
     @field_validator("username")
@@ -104,9 +106,33 @@ class UserProfileResponse(BaseModel):
     user_id: str
     email: str
     username: str
+    openai_api_key: Optional[str] = None
+    gemini_api_key: Optional[str] = None
     created_at: str
     last_login: Optional[str]
     active: bool
+
+
+class UserProfileUpdateRequest(BaseModel):
+    """Update user profile request body"""
+    session_id: str
+    openai_api_key: Optional[str] = None
+    gemini_api_key: Optional[str] = None
+
+
+# ============================================================================
+# API KEY MASKING
+# ============================================================================
+
+def mask_api_key(key: Optional[str]) -> Optional[str]:
+    """Return a masked version of an API key for safe display in the UI.
+    Shows the first 6 and last 4 characters, replacing the middle with '...'.
+    Returns None if the key is not set."""
+    if not key:
+        return None
+    if len(key) <= 10:
+        return "***"
+    return f"{key[:6]}...{key[-4:]}"
 
 
 # ============================================================================
@@ -273,6 +299,8 @@ async def register(request: UserRegisterRequest):
             "email": email_clean,
             "username": username_clean,
             "password_hash": hashed_password,
+            "openai_api_key": request.openai_api_key,
+            "gemini_api_key": request.gemini_api_key,
             "created_at": datetime.utcnow().isoformat(),
             "updated_at": datetime.utcnow().isoformat(),
             "last_login": None,
@@ -463,6 +491,8 @@ async def get_profile(session_id: str):
             user_id=user.get("user_id"),
             email=user.get("email"),
             username=user.get("username"),
+            openai_api_key=mask_api_key(user.get("openai_api_key")),
+            gemini_api_key=mask_api_key(user.get("gemini_api_key")),
             created_at=user.get("created_at"),
             last_login=user.get("last_login"),
             active=user.get("active")
@@ -562,8 +592,55 @@ async def change_password(request: ChangePasswordRequest):
 
 
 # ============================================================================
-# HEALTH CHECK
+# PROFILE OPERATIONS
 # ============================================================================
+
+@router.patch("/profile")
+@log_exceptions
+async def update_profile(request: UserProfileUpdateRequest):
+    """Update user API keys"""
+    session_id = request.session_id
+    logger.info(f"Profile update attempt for session: {session_id}")
+    
+    try:
+        user_id = validate_session(session_id)
+        if not user_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid session"
+            )
+            
+        from db_manager import _db_manager
+        
+        update_data = {}
+        # We only update if the payload explicitly provides a string (even an empty string to clear it)
+        if request.openai_api_key is not None:
+            update_data["openai_api_key"] = request.openai_api_key
+        if request.gemini_api_key is not None:
+            update_data["gemini_api_key"] = request.gemini_api_key
+            
+        if not update_data:
+            return {"status": "success", "message": "No fields to update"}
+            
+        update_data["updated_at"] = datetime.utcnow().isoformat()
+            
+        await _db_manager.db[COLLECTION_USERS].update_one(
+            {"user_id": user_id},
+            {"$set": update_data}
+        )
+        
+        logger.info(f"Profile updated for user: {user_id}")
+        return {"status": "success", "message": "Profile updated successfully"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Profile update error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update profile"
+        )
+
 
 @router.get("/health")
 async def auth_health():

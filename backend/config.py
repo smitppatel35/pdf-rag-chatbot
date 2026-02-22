@@ -57,23 +57,23 @@ class Settings(BaseSettings):
     )
     
     # ========================================================================
-    # VECTOR STORE SETTINGS (ChromaDB)
+    # VECTOR STORE SETTINGS (MongoDB Atlas Vector Search)
     # ========================================================================
     
-    CHROMA_PERSIST_DIR: str = Field(
-        default="./chroma_db",
-        env="CHROMA_PERSIST_DIR",
-        description="ChromaDB persistent storage directory"
+    MONGODB_VECTOR_INDEX_NAME: str = Field(
+        default="vector_index",
+        env="MONGODB_VECTOR_INDEX_NAME",
+        description="MongoDB Atlas Vector Search index name"
     )
-    CHROMA_COLLECTION_NAME: str = Field(
-        default="pdf_documents",
-        env="CHROMA_COLLECTION_NAME",
-        description="Default ChromaDB collection name"
+    MONGODB_VECTOR_COLLECTION: str = Field(
+        default="pdf_vectors",
+        env="MONGODB_VECTOR_COLLECTION",
+        description="MongoDB collection for storing document vectors"
     )
-    EMBEDDING_MODEL_NAME: str = Field(
-        default="all-MiniLM-L6-v2",
-        env="EMBEDDING_MODEL_NAME",
-        description="HuggingFace embedding model name"
+    OPENAI_EMBEDDING_MODEL: str = Field(
+        default="text-embedding-3-small",
+        env="OPENAI_EMBEDDING_MODEL",
+        description="OpenAI embedding model name (used for PDF vector storage)"
     )
     VECTOR_STORE_SEARCH_TYPE: str = Field(
         default="similarity",
@@ -311,20 +311,45 @@ def reload_settings() -> Settings:
 # DIRECTORY INITIALIZATION
 # ============================================================================
 
+def _safe_makedirs(path: str) -> str:
+    """Create directory, falling back to a /tmp equivalent on read-only filesystems.
+    Returns the path that was actually created (may differ from input on Lambda).
+    """
+    try:
+        os.makedirs(path, exist_ok=True)
+        return path
+    except OSError:
+        # Vercel / AWS Lambda: /var/task is read-only, use /tmp instead
+        tmp_path = os.path.join("/tmp", os.path.basename(path.rstrip("/\\")))
+        os.makedirs(tmp_path, exist_ok=True)
+        return tmp_path
+
+
 def create_upload_directories():
-    """Create necessary upload and output directories"""
+    """Create necessary upload and output directories.
+    On read-only filesystems (Vercel Lambda), falls back to /tmp subdirectories
+    and patches the settings object so the rest of the app uses the correct path.
+    """
     settings = get_settings()
-    
-    directories = [
-        settings.UPLOAD_DIR,
-        settings.PODCAST_OUTPUT_DIR,
-        settings.CHROMA_PERSIST_DIR,
-        "./logs"
-    ]
-    
-    for directory in directories:
-        os.makedirs(directory, exist_ok=True)
-        logger.info(f"Directory ready: {directory}")
+
+    upload_dir = _safe_makedirs(settings.UPLOAD_DIR)
+    podcast_dir = _safe_makedirs(settings.PODCAST_OUTPUT_DIR)
+    log_dir = _safe_makedirs("./logs")
+
+    # Patch settings if paths were redirected to /tmp
+    if upload_dir != settings.UPLOAD_DIR:
+        settings.UPLOAD_DIR = upload_dir
+        logger.info(f"Upload dir remapped to: {upload_dir} (read-only filesystem)")
+    else:
+        logger.info(f"Directory ready: {upload_dir}")
+
+    if podcast_dir != settings.PODCAST_OUTPUT_DIR:
+        settings.PODCAST_OUTPUT_DIR = podcast_dir
+        logger.info(f"Podcast dir remapped to: {podcast_dir} (read-only filesystem)")
+    else:
+        logger.info(f"Directory ready: {podcast_dir}")
+
+    logger.info(f"Directory ready: {log_dir}")
 
 
 # ============================================================================

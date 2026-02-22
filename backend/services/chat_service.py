@@ -43,6 +43,7 @@ def process_chat_completion(
     chat_session_data: Dict,
     active_source_ids: List[str],
     settings: Settings,
+    session_id: str,
     model: Optional[str] = None
 ):
     """Select correct ai_engine async-generator based on context and requested model.
@@ -89,7 +90,8 @@ def process_chat_completion(
             user_input,
             history,
             source_data["filepath"],
-            model=model or "llama3"
+            model=model or "llama3",
+            session_id=session_id
         )
     elif len(active_source_ids) > 1:
         pdf_paths = [
@@ -100,14 +102,15 @@ def process_chat_completion(
             user_input,
             history,
             pdf_paths,
-            model=model or "llama3"
+            model=model or "llama3",
+            session_id=session_id
         )
     else:
         # general chat: use selected model (llama3 or gemma only)
         if model and model.lower() == "gemma":
-            return chat_completion_Gemma_ws(user_input, history)
+            return chat_completion_Gemma_ws(user_input, history, session_id=session_id)
         # Default to llama3 for any other model
-        return chat_completion_LlamaModel_ws(user_input, history)
+        return chat_completion_LlamaModel_ws(user_input, history, session_id=session_id)
 
 @router.post("/send", response_model=ChatResponse)
 @log_exceptions
@@ -137,6 +140,7 @@ async def send_chat(
             chat_session_data,
             request.active_source_ids,
             settings,
+            session_id=request.session_id,
             model=request.model
         )
 
