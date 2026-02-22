@@ -192,7 +192,7 @@ async def _get_api_keys_for_session(session_id: Optional[str]) -> dict:
     user_gemini = None
 
     if session_id:
-        user_id = validate_session(session_id)
+        user_id = await validate_session(session_id)
         if user_id:
             user = await get_user_by_id(user_id)
             if user:
