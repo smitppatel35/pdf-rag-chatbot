@@ -6,8 +6,7 @@ from typing import List, Dict, AsyncGenerator, Optional, Tuple
 from langchain_core.documents import Document
 from langchain_community.document_loaders import PyMuPDFLoader
 
-from langchain_ollama import OllamaLLM
-from llm_models import llama3_llm, gemma_llm, phi3_llm, AVAILABLE_MODELS, CHAT_MODELS
+from llm_models import AVAILABLE_MODELS, CHAT_MODELS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from prompts import (
     SYSTEM_PROMPT,
@@ -52,16 +51,12 @@ text_splitter = RecursiveCharacterTextSplitter(
 
 
 def get_available_models() -> List[str]:
-    """Return list of available chat model names (excludes phi3 which is for podcasts)"""
+    """Return list of available chat model names"""
     return list(CHAT_MODELS.keys())
 
 def get_model_llm(model_name: str):
-    """Get LLM instance by model name, defaults to llama3"""
-    return CHAT_MODELS.get(model_name, llama3_llm)
-
-def get_podcast_model():
-    """Get the dedicated podcast generation model (phi3)"""
-    return phi3_llm
+    """Get LLM instance by model name"""
+    return CHAT_MODELS.get(model_name)
 
 # --- Podcast prompt (moved) ---
 # The PODCAST_SCRIPT_PROMPT_TEMPLATE used to live here but was moved to `prompts.py`
@@ -179,6 +174,36 @@ async def _retrieve_context(query: str, source_id: str, k: int = 3) -> str:
     return "\n\n--\n\n".join(context_parts)
 
 # --- Chat Functions (LCEL-based) ---
+async def _get_api_keys_for_session(session_id: Optional[str]) -> dict:
+    """Resolve API keys for the session.
+
+    Priority:
+      1. User's own keys (stored in their profile)
+      2. Fallback env vars: OPENAI_API_KEY and GEMINI_API_KEY
+    """
+    from auth import validate_session
+    from db_manager import get_user_by_id
+
+    # Fallback keys from environment (server-level)
+    fallback_openai = os.getenv("OPENAI_API_KEY")
+    fallback_gemini = os.getenv("GEMINI_API_KEY")
+
+    user_openai = None
+    user_gemini = None
+
+    if session_id:
+        user_id = validate_session(session_id)
+        if user_id:
+            user = await get_user_by_id(user_id)
+            if user:
+                user_openai = user.get("openai_api_key") or None
+                user_gemini = user.get("gemini_api_key") or None
+
+    return {
+        "openai": user_openai or fallback_openai,
+        "gemini": user_gemini or fallback_gemini,
+    }
+
 async def chat_completion_LlamaModel_ws(
     text: str,
     history: List[Dict[str, str]],
@@ -188,13 +213,14 @@ async def chat_completion_LlamaModel_ws(
     logger.info(f"Initiating Standard Llama3 WS completion (LCEL) for text: '{text[:50]}...'")
     try:
         # Create chain with or without history based on session_id
+        api_keys = await _get_api_keys_for_session(session_id) if session_id else {}
         if session_id:
-            chain = create_chat_chain_with_history(model_name="llama3", session_id=session_id)
+            chain = create_chat_chain_with_history(model_name="llama3", api_keys=api_keys, session_id=session_id)
             chain_input = {"input": text, "session_id": session_id}
         else:
             # For backward compatibility, use chain without session
             from chains import create_chat_chain
-            chain = create_chat_chain(model_name="llama3")
+            chain = create_chat_chain(model_name="llama3", api_keys=api_keys)
             chain_input = {"input": text, "chat_history": history[-(HISTORY_LENGTH * 2):]}
         
         # Stream response using LCEL
@@ -233,12 +259,13 @@ async def chat_completion_Gemma_ws(
     """Chat completion using LCEL chain with Gemma model."""
     logger.info(f"Initiating Gemma WS completion (LCEL) for text: '{text[:50]}...'")
     try:
+        api_keys = await _get_api_keys_for_session(session_id) if session_id else {}
         if session_id:
-            chain = create_chat_chain_with_history(model_name="gemma", session_id=session_id)
+            chain = create_chat_chain_with_history(model_name="gemma", api_keys=api_keys, session_id=session_id)
             chain_input = {"input": text, "session_id": session_id}
         else:
             from chains import create_chat_chain
-            chain = create_chat_chain(model_name="gemma")
+            chain = create_chat_chain(model_name="gemma", api_keys=api_keys)
             chain_input = {"input": text, "chat_history": history[-(HISTORY_LENGTH * 2):]}
         
         full_response = ""
@@ -292,11 +319,13 @@ async def chat_completion_with_pdf_ws(
         
         # Create RAG chain with or without history
         try:
+            api_keys = await _get_api_keys_for_session(session_id) if session_id else {}
             if session_id:
                 chain = create_rag_chain_with_history(
                     source_id=source_id,
                     session_id=session_id,
                     model_name=model,
+                    api_keys=api_keys,
                     k=3
                 )
                 chain_input = {"input": text}
@@ -306,6 +335,7 @@ async def chat_completion_with_pdf_ws(
                 chain = create_rag_chain(
                     source_id=source_id,
                     model_name=model,
+                    api_keys=api_keys,
                     k=3
                 )
                 chain_input = text
@@ -338,6 +368,7 @@ async def chat_completion_with_multiple_pdfs_ws(
     text: str,
     history: List[Dict[str, str]],
     pdf_paths: List[str],
+    model: str = "llama3",
     session_id: Optional[str] = None
 ) -> AsyncGenerator[Tuple[Optional[str], Optional[str]], None]:
     """Multi-PDF RAG completion using LCEL chain."""
@@ -363,11 +394,13 @@ async def chat_completion_with_multiple_pdfs_ws(
         
         # Create multi-PDF RAG chain
         try:
+            api_keys = await _get_api_keys_for_session(session_id) if session_id else {}
             if session_id:
                 chain = create_multi_pdf_rag_chain_with_history(
                     source_ids=source_ids,
                     session_id=session_id,
-                    model_name="llama3",
+                    model_name=model,
+                    api_keys=api_keys,
                     k=2
                 )
                 chain_input = {"input": text}
@@ -375,7 +408,8 @@ async def chat_completion_with_multiple_pdfs_ws(
                 from chains import create_multi_pdf_rag_chain
                 chain = create_multi_pdf_rag_chain(
                     source_ids=source_ids,
-                    model_name="llama3",
+                    model_name=model,
+                    api_keys=api_keys,
                     k=2
                 )
                 chain_input = text
@@ -520,4 +554,4 @@ async def generate_chat_title(messages_for_title_generation: List[Dict[str, str]
 
 # Prompt constants are imported from prompts.py at the top of this file
 
-logger.info("ai_engine.py loaded with local Ollama models: llama3, gemma, phi3.")
+logger.info("ai_engine.py loaded — cloud models: gpt-4o-mini, gemini-1.5-flash")

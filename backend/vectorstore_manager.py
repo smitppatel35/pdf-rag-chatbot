@@ -6,7 +6,7 @@ including document storage and retrieval using LangChain.
 """
 
 from langchain_mongodb import MongoDBAtlasVectorSearch
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_openai import OpenAIEmbeddings
 from langchain_core.documents import Document
 from pymongo.collection import Collection
 from typing import List, Optional, Tuple, Dict, Any
@@ -26,11 +26,17 @@ settings = get_settings()
 class VectorStoreManager:
     """Manages MongoDB Atlas Vector Search operations for PDF document retrieval."""
     
-    def __init__(self):
-        """Initialize MongoDB Vector Search and embeddings model."""
+    def __init__(self, openai_api_key: str = None):
+        """Initialize MongoDB Vector Search and embeddings model.
+        
+        Args:
+            openai_api_key: OpenAI API key for embeddings. Falls back to
+                            OPENAI_API_KEY env var if not provided.
+        """
         self._embeddings = None
         self._vectorstore = None
         self._sync_client = None
+        self._openai_api_key = openai_api_key
         
     @property
     def sync_client(self) -> MongoClient:
@@ -50,18 +56,21 @@ class VectorStoreManager:
         return self._sync_client
         
     @property
-    def embeddings(self) -> HuggingFaceEmbeddings:
-        """Lazy initialization of embeddings model."""
+    def embeddings(self) -> OpenAIEmbeddings:
+        """Lazy initialization of OpenAI embeddings model."""
         if self._embeddings is None:
-            # Note: For Cloud Run or serverless with small limits, 
-            # this local model might still be too large (~2GB for PyTorch).
-            # HuggingFace Spaces can handle it.
-            self._embeddings = HuggingFaceEmbeddings(
-                model_name=settings.EMBEDDING_MODEL_NAME,
-                model_kwargs={'device': 'cpu'},
-                encode_kwargs={'normalize_embeddings': True}
+            import os
+            api_key = self._openai_api_key or os.getenv("OPENAI_API_KEY")
+            if not api_key:
+                raise ValueError(
+                    "OpenAI API key is required for embeddings. "
+                    "Set it via OPENAI_API_KEY env var or pass it to get_vectorstore_manager()."
+                )
+            self._embeddings = OpenAIEmbeddings(
+                model="text-embedding-3-small",
+                api_key=api_key
             )
-            logger.info(f"Embeddings model initialized: {settings.EMBEDDING_MODEL_NAME}")
+            logger.info("OpenAI Embeddings initialized (text-embedding-3-small)")
         return self._embeddings
     
     @property
@@ -300,9 +309,15 @@ class VectorStoreManager:
 _vectorstore_manager = None
 
 
-def get_vectorstore_manager() -> VectorStoreManager:
-    """Get the global VectorStoreManager singleton instance."""
+def get_vectorstore_manager(openai_api_key: str = None) -> VectorStoreManager:
+    """Get or create the VectorStoreManager singleton instance.
+    
+    If openai_api_key is provided and differs from the existing instance's key,
+    a new instance is created so embeddings use the correct key.
+    """
     global _vectorstore_manager
-    if _vectorstore_manager is None:
-        _vectorstore_manager = VectorStoreManager()
+    if _vectorstore_manager is None or (
+        openai_api_key and openai_api_key != _vectorstore_manager._openai_api_key
+    ):
+        _vectorstore_manager = VectorStoreManager(openai_api_key=openai_api_key)
     return _vectorstore_manager

@@ -1,11 +1,12 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import { api, ChatMessage } from "@/lib/api";
 import { useSession } from "@/context/session-context";
 
 export function useChatSession() {
-    const { sessionId, chatSessionId, setSessionId, setChatSessionId, triggerRefresh } = useSession();
+    const { sessionId, chatSessionId, setSessionId, setChatSessionId, triggerRefresh, hasApiKey, isProfileLoaded } = useSession();
 
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [input, setInput] = useState("");
@@ -26,24 +27,33 @@ export function useChatSession() {
         }
     }, [messages, isGenerating]);
 
+    const router = useRouter();
+
+    // Redirect to login if not authenticated
+    useEffect(() => {
+        const storedSession = localStorage.getItem("session_id");
+        if (!storedSession && !sessionId) {
+            router.push("/login");
+        }
+    }, [sessionId, router]);
+
     // Initial auth + first chat session
     useEffect(() => {
         const init = async () => {
+            if (!sessionId) return;
+
             try {
-                const authData = await api.login("test@example.com", "password").catch(async () => {
-                    await api.register("test@example.com", "testuser", "password");
-                    return api.login("test@example.com", "password");
-                });
-                setSessionId(authData.session_id);
+                // If there's no chat session active, create a new one
+                if (!chatSessionId) {
+                    const chatData = await api.createChatSession(sessionId);
+                    setChatSessionId(chatData.chat_session_id);
+                    triggerRefresh();
 
-                const chatData = await api.createChatSession(authData.session_id);
-                setChatSessionId(chatData.chat_session_id);
-                triggerRefresh();
-
-                setMessages([{
-                    role: "assistant",
-                    content: "Hello! I'm ready to help. Upload a document (up to 10MB) using the paperclip icon below, or just ask a question.",
-                }]);
+                    setMessages([{
+                        role: "assistant",
+                        content: "Hello! I'm ready to help. Upload a document (up to 10MB) using the paperclip icon below, or just ask a question.",
+                    }]);
+                }
             } catch (error) {
                 console.error("Failed to initialize session:", error);
                 setMessages([{ role: "assistant", content: "Error connecting to the server. Please check the backend is running on port 8000." }]);
@@ -53,7 +63,7 @@ export function useChatSession() {
         };
         init();
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+    }, [sessionId]);
 
     // Load history when switching sessions
     const loadHistory = useCallback(async (sessId: string, chatSessId: string) => {
@@ -172,5 +182,7 @@ export function useChatSession() {
         handleFileUpload,
         handleSendMessage,
         handleKeyDown,
+        hasApiKey,
+        isProfileLoaded,
     };
 }

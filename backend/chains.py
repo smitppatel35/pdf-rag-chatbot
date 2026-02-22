@@ -16,7 +16,7 @@ from langchain_core.runnables import RunnablePassthrough, RunnableParallel, Runn
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.callbacks import BaseCallbackHandler
 # LLM instances are shared from llm_models to avoid circular imports
-from llm_models import llama3_llm, gemma_llm, phi3_llm, AVAILABLE_MODELS, CHAT_MODELS
+from llm_models import AVAILABLE_MODELS, CHAT_MODELS
 
 from prompts import (
     CHAT_PROMPT_TEMPLATE,
@@ -36,22 +36,29 @@ settings = get_settings()
 # LLM INSTANCES (imported from ai_engine to avoid duplication)
 # ============================================================================
 
-# Model mapping (uses the shared instances imported above)
-AVAILABLE_MODELS = {
-    "llama3": llama3_llm,
-    "gemma": gemma_llm,
-    "phi3": phi3_llm
-}
-
-CHAT_MODELS = {
-    "llama3": llama3_llm,
-    "gemma": gemma_llm
-}
+# Model mapping (cloud-only; Ollama removed for Vercel compatibility)
+AVAILABLE_MODELS = AVAILABLE_MODELS
+CHAT_MODELS = CHAT_MODELS
 
 
-def get_llm(model_name: str = "llama3"):
-    """Get LLM instance by name."""
-    return CHAT_MODELS.get(model_name, llama3_llm)
+def get_llm(model_name: str = "gpt-4o-mini", api_keys: dict = None):
+    """Get LLM instance by name. Only cloud models are supported on Vercel."""
+    if model_name == "gpt-4o-mini":
+        from langchain_openai import ChatOpenAI
+        key = api_keys.get("openai") if api_keys else None
+        if not key:
+            raise ValueError("OpenAI API key missing. Please add it in settings.")
+        return ChatOpenAI(model="gpt-4o-mini", temperature=0.1, api_key=key)
+    elif model_name == "gemini-1.5-flash":
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        key = api_keys.get("gemini") if api_keys else None
+        if not key:
+            raise ValueError("Gemini API key missing. Please add it in settings.")
+        return ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.1, google_api_key=key)
+    raise ValueError(
+        f"Unknown or unsupported model: '{model_name}'. "
+        f"Supported models: gpt-4o-mini, gemini-1.5-flash"
+    )
 
 
 # ============================================================================
@@ -117,6 +124,7 @@ def get_session_history(session_id: str, k: int = HISTORY_LENGTH) -> List:
 
 def create_chat_chain(
     model_name: str = "llama3",
+    api_keys: dict = None,
     callbacks: Optional[List[BaseCallbackHandler]] = None,
     enable_observability: bool = False
 ):
@@ -127,13 +135,14 @@ def create_chat_chain(
     
     Args:
         model_name: Name of the model to use (llama3, gemma)
+        api_keys: Dictionary of API keys for remote models
         callbacks: Optional list of callback handlers
         enable_observability: Auto-create logging/performance callbacks
         
     Returns:
         Runnable chain
     """
-    llm = get_llm(model_name)
+    llm = get_llm(model_name, api_keys)
     output_parser = StrOutputParser()
     
     # Create default callbacks if observability enabled
@@ -157,6 +166,7 @@ def create_chat_chain(
 
 def create_chat_chain_with_history(
     model_name: str = "llama3",
+    api_keys: dict = None,
     session_id: Optional[str] = None,
     callbacks: Optional[List[BaseCallbackHandler]] = None,
     enable_observability: bool = False
@@ -166,6 +176,7 @@ def create_chat_chain_with_history(
     
     Args:
         model_name: Name of the model to use
+        api_keys: Dictionary of API keys for remote models
         session_id: Session ID for history retrieval
         callbacks: Optional list of callback handlers
         enable_observability: Auto-create logging/performance callbacks
@@ -173,7 +184,7 @@ def create_chat_chain_with_history(
     Returns:
         Runnable chain with history integration
     """
-    llm = get_llm(model_name)
+    llm = get_llm(model_name, api_keys)
     output_parser = StrOutputParser()
     
     # Create default callbacks if observability enabled
@@ -218,6 +229,7 @@ def create_chat_chain_with_history(
 def create_rag_chain(
     source_id: str,
     model_name: str = "llama3",
+    api_keys: dict = None,
     k: int = 3,
     callbacks: Optional[List[BaseCallbackHandler]] = None,
     enable_observability: bool = False
@@ -230,6 +242,7 @@ def create_rag_chain(
     Args:
         source_id: MongoDB source identifier for filtering
         model_name: Name of the model to use
+        api_keys: Dictionary of API keys for remote models
         k: Number of documents to retrieve
         callbacks: Optional list of callback handlers
         enable_observability: Auto-create logging/performance callbacks
@@ -237,7 +250,7 @@ def create_rag_chain(
     Returns:
         Runnable RAG chain
     """
-    llm = get_llm(model_name)
+    llm = get_llm(model_name, api_keys)
     output_parser = StrOutputParser()
     
     # Create default callbacks if observability enabled
@@ -248,8 +261,9 @@ def create_rag_chain(
             enable_debug=False
         )
     
-    # Get retriever from vectorstore manager
-    vectorstore_mgr = get_vectorstore_manager()
+    # Get retriever from vectorstore manager (pass OpenAI key for embeddings)
+    openai_key = api_keys.get("openai") if api_keys else None
+    vectorstore_mgr = get_vectorstore_manager(openai_api_key=openai_key)
     retriever = vectorstore_mgr.as_retriever(
         source_id=source_id,
         search_kwargs={'k': k}
@@ -279,6 +293,7 @@ def create_rag_chain_with_history(
     source_id: str,
     session_id: str,
     model_name: str = "llama3",
+    api_keys: dict = None,
     k: int = 3,
     callbacks: Optional[List[BaseCallbackHandler]] = None,
     enable_observability: bool = False
@@ -290,6 +305,7 @@ def create_rag_chain_with_history(
         source_id: MongoDB source identifier
         session_id: Session ID for history retrieval
         model_name: Name of the model to use
+        api_keys: Dictionary of API keys for remote models
         k: Number of documents to retrieve
         callbacks: Optional list of callback handlers
         enable_observability: Auto-create logging/performance callbacks
@@ -297,7 +313,7 @@ def create_rag_chain_with_history(
     Returns:
         Runnable RAG chain with history
     """
-    llm = get_llm(model_name)
+    llm = get_llm(model_name, api_keys)
     output_parser = StrOutputParser()
     
     # Create default callbacks if observability enabled
@@ -308,8 +324,9 @@ def create_rag_chain_with_history(
             enable_debug=False
         )
     
-    # Get retriever
-    vectorstore_mgr = get_vectorstore_manager()
+    # Get retriever (pass OpenAI key for embeddings)
+    openai_key = api_keys.get("openai") if api_keys else None
+    vectorstore_mgr = get_vectorstore_manager(openai_api_key=openai_key)
     retriever = vectorstore_mgr.as_retriever(
         source_id=source_id,
         search_kwargs={'k': k}
@@ -342,6 +359,7 @@ def create_rag_chain_with_history(
 def create_multi_pdf_rag_chain(
     source_ids: List[str],
     model_name: str = "llama3",
+    api_keys: dict = None,
     k: int = 2,
     callbacks: Optional[List[BaseCallbackHandler]] = None,
     enable_observability: bool = False
@@ -354,6 +372,7 @@ def create_multi_pdf_rag_chain(
     Args:
         source_ids: List of MongoDB source identifiers
         model_name: Name of the model to use
+        api_keys: Dictionary of API keys for remote models
         k: Number of documents to retrieve per source
         callbacks: Optional list of callback handlers
         enable_observability: Auto-create logging/performance callbacks
@@ -361,9 +380,10 @@ def create_multi_pdf_rag_chain(
     Returns:
         Runnable multi-PDF RAG chain
     """
-    llm = get_llm(model_name)
+    llm = get_llm(model_name, api_keys)
     output_parser = StrOutputParser()
-    vectorstore_mgr = get_vectorstore_manager()
+    openai_key = api_keys.get("openai") if api_keys else None
+    vectorstore_mgr = get_vectorstore_manager(openai_api_key=openai_key)
     
     # Create default callbacks if observability enabled
     if enable_observability and callbacks is None:
@@ -418,6 +438,7 @@ def create_multi_pdf_rag_chain_with_history(
     source_ids: List[str],
     session_id: str,
     model_name: str = "llama3",
+    api_keys: dict = None,
     k: int = 2,
     callbacks: Optional[List[BaseCallbackHandler]] = None,
     enable_observability: bool = False
@@ -429,6 +450,7 @@ def create_multi_pdf_rag_chain_with_history(
         source_ids: List of MongoDB source identifiers
         session_id: Session ID for history retrieval
         model_name: Name of the model to use
+        api_keys: Dictionary of API keys for remote models
         k: Number of documents to retrieve per source
         callbacks: Optional list of callback handlers
         enable_observability: Auto-create logging/performance callbacks
@@ -436,9 +458,10 @@ def create_multi_pdf_rag_chain_with_history(
     Returns:
         Runnable multi-PDF RAG chain with history
     """
-    llm = get_llm(model_name)
+    llm = get_llm(model_name, api_keys)
     output_parser = StrOutputParser()
-    vectorstore_mgr = get_vectorstore_manager()
+    openai_key = api_keys.get("openai") if api_keys else None
+    vectorstore_mgr = get_vectorstore_manager(openai_api_key=openai_key)
     
     # Create default callbacks if observability enabled
     if enable_observability and callbacks is None:

@@ -70,10 +70,10 @@ class Settings(BaseSettings):
         env="MONGODB_VECTOR_COLLECTION",
         description="MongoDB collection for storing document vectors"
     )
-    EMBEDDING_MODEL_NAME: str = Field(
-        default="all-MiniLM-L6-v2",
-        env="EMBEDDING_MODEL_NAME",
-        description="HuggingFace embedding model name"
+    OPENAI_EMBEDDING_MODEL: str = Field(
+        default="text-embedding-3-small",
+        env="OPENAI_EMBEDDING_MODEL",
+        description="OpenAI embedding model name (used for PDF vector storage)"
     )
     VECTOR_STORE_SEARCH_TYPE: str = Field(
         default="similarity",

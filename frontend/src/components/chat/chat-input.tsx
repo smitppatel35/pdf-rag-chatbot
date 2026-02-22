@@ -15,6 +15,8 @@ interface ChatInputProps {
     isGenerating: boolean;
     isUploading: boolean;
     isLoadingHistory: boolean;
+    hasApiKey: boolean;
+    isProfileLoaded: boolean;
 }
 
 export function ChatInput({
@@ -27,8 +29,11 @@ export function ChatInput({
     isGenerating,
     isUploading,
     isLoadingHistory,
+    hasApiKey,
+    isProfileLoaded,
 }: ChatInputProps) {
-    const isDisabled = isGenerating || isUploading || isLoadingHistory;
+    const isRestricted = isProfileLoaded && !hasApiKey;
+    const isDisabled = isGenerating || isUploading || isLoadingHistory || isRestricted;
 
     return (
         <div className="p-4 bg-background w-full max-w-4xl mx-auto shrink-0">
@@ -38,7 +43,7 @@ export function ChatInput({
                     onChange={(e) => onInputChange(e.target.value)}
                     onKeyDown={onKeyDown}
                     disabled={isDisabled}
-                    placeholder={isUploading ? "Uploading document..." : "Ask a question about your documents..."}
+                    placeholder={isRestricted ? "Please configure an API Key in Chat settings to proceed" : isUploading ? "Uploading document..." : "Ask a question about your documents..."}
                     className="min-h-[80px] max-h-[200px] w-full resize-none border-0 bg-transparent focus-visible:ring-0 focus-visible:outline-none px-4 pt-4 pb-2 shadow-none text-sm"
                     rows={2}
                 />

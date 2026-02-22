@@ -1,29 +1,22 @@
 """
 Shared LLM model instances for use across the application.
 
-Centralised here to avoid circular imports between ai_engine.py and chains.py,
-since both previously defined the same OllamaLLM instances independently.
+Only cloud-hosted models (OpenAI, Gemini) are supported on Vercel.
+Ollama local models have been removed — they require a running Ollama
+server which is not available in serverless / Lambda environments.
 """
 
-from langchain_ollama import OllamaLLM
-
 # ============================================================================
-# OLLAMA LOCAL MODEL INSTANCES
+# AVAILABLE MODELS (cloud-only for Vercel compatibility)
 # ============================================================================
 
-llama3_llm = OllamaLLM(model="llama3", temperature=0.1)
-gemma_llm = OllamaLLM(model="gemma3", temperature=0.1)
-phi3_llm = OllamaLLM(model="phi3", temperature=0.1)
+# Ollama models removed — not available on Vercel/serverless.
+# All LLM instances are created dynamically in chains.get_llm() using
+# user-supplied API keys (OpenAI / Gemini).
 
-# Available models mapping
 AVAILABLE_MODELS = {
-    "llama3": llama3_llm,
-    "gemma": gemma_llm,
-    "phi3": phi3_llm,
+    "gpt-4o-mini": "OpenAI GPT-4o Mini (requires OpenAI API key)",
+    "gemini-1.5-flash": "Google Gemini 1.5 Flash (requires Gemini API key)",
 }
 
-# Chat-only models (phi3 reserved for podcast/mindmap generation)
-CHAT_MODELS = {
-    "llama3": llama3_llm,
-    "gemma": gemma_llm,
-}
+CHAT_MODELS = AVAILABLE_MODELS
