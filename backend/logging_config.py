@@ -7,9 +7,23 @@ import functools
 import asyncio
 from fastapi import HTTPException as FastAPIHTTPException
 
-LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
-os.makedirs(LOG_DIR, exist_ok=True)
-DEFAULT_LOG_FILE = os.path.join(LOG_DIR, "app.log")
+# On Vercel / Lambda, /var/task is read-only. Try the local logs dir first,
+# then fall back to /tmp (writable on Lambda), then give up and use console-only.
+def _resolve_log_dir() -> str | None:
+    candidates = [
+        os.path.join(os.path.dirname(__file__), "logs"),  # local dev
+        "/tmp/logs",                                        # Lambda / Vercel fallback
+    ]
+    for path in candidates:
+        try:
+            os.makedirs(path, exist_ok=True)
+            return path
+        except OSError:
+            continue
+    return None  # console-only
+
+LOG_DIR = _resolve_log_dir()
+DEFAULT_LOG_FILE = os.path.join(LOG_DIR, "app.log") if LOG_DIR else None
 
 
 def configure_logging(level: int = logging.INFO, log_file: Optional[str] = None) -> None:
@@ -34,11 +48,15 @@ def configure_logging(level: int = logging.INFO, log_file: Optional[str] = None)
     ch.setFormatter(formatter)
     root.addHandler(ch)
 
-    # Rotating file handler
-    fh = RotatingFileHandler(log_file, maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8")
-    fh.setLevel(level)
-    fh.setFormatter(formatter)
-    root.addHandler(fh)
+    # Rotating file handler — skipped if no writable log path (e.g. Vercel Lambda)
+    if log_file:
+        try:
+            fh = RotatingFileHandler(log_file, maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8")
+            fh.setLevel(level)
+            fh.setFormatter(formatter)
+            root.addHandler(fh)
+        except OSError:
+            pass  # Read-only filesystem — console-only logging
 
     # Reduce noisy loggers
     logging.getLogger("httpx").setLevel(logging.WARNING)

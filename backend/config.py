@@ -311,19 +311,45 @@ def reload_settings() -> Settings:
 # DIRECTORY INITIALIZATION
 # ============================================================================
 
+def _safe_makedirs(path: str) -> str:
+    """Create directory, falling back to a /tmp equivalent on read-only filesystems.
+    Returns the path that was actually created (may differ from input on Lambda).
+    """
+    try:
+        os.makedirs(path, exist_ok=True)
+        return path
+    except OSError:
+        # Vercel / AWS Lambda: /var/task is read-only, use /tmp instead
+        tmp_path = os.path.join("/tmp", os.path.basename(path.rstrip("/\\")))
+        os.makedirs(tmp_path, exist_ok=True)
+        return tmp_path
+
+
 def create_upload_directories():
-    """Create necessary upload and output directories"""
+    """Create necessary upload and output directories.
+    On read-only filesystems (Vercel Lambda), falls back to /tmp subdirectories
+    and patches the settings object so the rest of the app uses the correct path.
+    """
     settings = get_settings()
-    
-    directories = [
-        settings.UPLOAD_DIR,
-        settings.PODCAST_OUTPUT_DIR,
-        "./logs"
-    ]
-    
-    for directory in directories:
-        os.makedirs(directory, exist_ok=True)
-        logger.info(f"Directory ready: {directory}")
+
+    upload_dir = _safe_makedirs(settings.UPLOAD_DIR)
+    podcast_dir = _safe_makedirs(settings.PODCAST_OUTPUT_DIR)
+    log_dir = _safe_makedirs("./logs")
+
+    # Patch settings if paths were redirected to /tmp
+    if upload_dir != settings.UPLOAD_DIR:
+        settings.UPLOAD_DIR = upload_dir
+        logger.info(f"Upload dir remapped to: {upload_dir} (read-only filesystem)")
+    else:
+        logger.info(f"Directory ready: {upload_dir}")
+
+    if podcast_dir != settings.PODCAST_OUTPUT_DIR:
+        settings.PODCAST_OUTPUT_DIR = podcast_dir
+        logger.info(f"Podcast dir remapped to: {podcast_dir} (read-only filesystem)")
+    else:
+        logger.info(f"Directory ready: {podcast_dir}")
+
+    logger.info(f"Directory ready: {log_dir}")
 
 
 # ============================================================================
