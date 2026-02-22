@@ -102,6 +102,13 @@ class MongoDBManager:
             if "pdf_metadata" not in existing:
                 await self._db.create_collection("pdf_metadata")
                 logger.info("Created 'pdf_metadata' collection")
+                
+            from config import get_settings
+            settings = get_settings()
+            vector_coll_name = settings.MONGODB_VECTOR_COLLECTION
+            if vector_coll_name not in existing:
+                await self._db.create_collection(vector_coll_name)
+                logger.info(f"Created '{vector_coll_name}' collection for Vector Search")
             
             # Create indexes for users collection
             await self._db.users.create_index("user_id", unique=True)
@@ -167,6 +174,7 @@ COLLECTION_USERS = "users"
 COLLECTION_CHAT_SESSIONS = "chat_sessions"
 COLLECTION_SESSIONS = "sessions"
 COLLECTION_PDF_METADATA = "pdf_metadata"
+COLLECTION_PDF_VECTORS = "pdf_vectors" # Or dynamically from settings if needed for imports
 
 # SESSION MANAGEMENT FUNCTIONS
 @log_exceptions

@@ -57,18 +57,18 @@ class Settings(BaseSettings):
     )
     
     # ========================================================================
-    # VECTOR STORE SETTINGS (ChromaDB)
+    # VECTOR STORE SETTINGS (MongoDB Atlas Vector Search)
     # ========================================================================
     
-    CHROMA_PERSIST_DIR: str = Field(
-        default="./chroma_db",
-        env="CHROMA_PERSIST_DIR",
-        description="ChromaDB persistent storage directory"
+    MONGODB_VECTOR_INDEX_NAME: str = Field(
+        default="vector_index",
+        env="MONGODB_VECTOR_INDEX_NAME",
+        description="MongoDB Atlas Vector Search index name"
     )
-    CHROMA_COLLECTION_NAME: str = Field(
-        default="pdf_documents",
-        env="CHROMA_COLLECTION_NAME",
-        description="Default ChromaDB collection name"
+    MONGODB_VECTOR_COLLECTION: str = Field(
+        default="pdf_vectors",
+        env="MONGODB_VECTOR_COLLECTION",
+        description="MongoDB collection for storing document vectors"
     )
     EMBEDDING_MODEL_NAME: str = Field(
         default="all-MiniLM-L6-v2",
@@ -318,7 +318,6 @@ def create_upload_directories():
     directories = [
         settings.UPLOAD_DIR,
         settings.PODCAST_OUTPUT_DIR,
-        settings.CHROMA_PERSIST_DIR,
         "./logs"
     ]
     

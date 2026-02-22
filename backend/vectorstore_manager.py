@@ -1,19 +1,21 @@
 """
-Vector Store Manager for ChromaDB integration.
+Vector Store Manager for MongoDB Atlas Vector Search integration.
 
-This module provides a clean abstraction layer for ChromaDB operations,
-including document storage, retrieval, and collection management.
+This module provides a clean abstraction layer for MongoDB Atlas Vector Search operations,
+including document storage and retrieval using LangChain.
 """
 
-import chromadb
-from chromadb.config import Settings
-from langchain_chroma import Chroma
+from langchain_mongodb import MongoDBAtlasVectorSearch
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document
-from typing import List, Optional, Tuple
+from pymongo.collection import Collection
+from typing import List, Optional, Tuple, Dict, Any
 import logging
+import asyncio
 
 from config import get_settings
+from db_manager import COLLECTION_PDF_VECTORS
+from pymongo import MongoClient
 
 logger = logging.getLogger(__name__)
 
@@ -22,32 +24,38 @@ settings = get_settings()
 
 
 class VectorStoreManager:
-    """Manages ChromaDB vector store operations for PDF document retrieval."""
+    """Manages MongoDB Atlas Vector Search operations for PDF document retrieval."""
     
     def __init__(self):
-        """Initialize ChromaDB client and embeddings model."""
-        self._client = None
+        """Initialize MongoDB Vector Search and embeddings model."""
         self._embeddings = None
-        self._vectorstore_cache = {}  # Cache Chroma instances by collection name
+        self._vectorstore = None
+        self._sync_client = None
         
     @property
-    def client(self) -> chromadb.PersistentClient:
-        """Lazy initialization of ChromaDB client."""
-        if self._client is None:
-            self._client = chromadb.PersistentClient(
-                path=settings.CHROMA_PERSIST_DIR,
-                settings=Settings(
-                    anonymized_telemetry=False,
-                    allow_reset=True
-                )
-            )
-            logger.info(f"ChromaDB client initialized at {settings.CHROMA_PERSIST_DIR}")
-        return self._client
-    
+    def sync_client(self) -> MongoClient:
+        """Lazy initialization of synchronous MongoClient."""
+        if self._sync_client is None:
+            # Create a synchronous client for LangChain
+            import os as _os
+            mongo_uri = _os.getenv("MONGODB_URI", settings.MONGODB_URI)
+            is_dev = _os.getenv("ENVIRONMENT", "development") == "development"
+            
+            client_kwargs = {}
+            if is_dev and mongo_uri.startswith("mongodb+srv://"):
+                client_kwargs["tlsAllowInvalidCertificates"] = True
+                
+            self._sync_client = MongoClient(mongo_uri, **client_kwargs)
+            logger.info("Synchronous MongoClient initialized for Vector Search")
+        return self._sync_client
+        
     @property
     def embeddings(self) -> HuggingFaceEmbeddings:
         """Lazy initialization of embeddings model."""
         if self._embeddings is None:
+            # Note: For Cloud Run or serverless with small limits, 
+            # this local model might still be too large (~2GB for PyTorch).
+            # HuggingFace Spaces can handle it.
             self._embeddings = HuggingFaceEmbeddings(
                 model_name=settings.EMBEDDING_MODEL_NAME,
                 model_kwargs={'device': 'cpu'},
@@ -56,87 +64,121 @@ class VectorStoreManager:
             logger.info(f"Embeddings model initialized: {settings.EMBEDDING_MODEL_NAME}")
         return self._embeddings
     
-    def get_vectorstore(self, collection_name: str) -> Chroma:
-        """
-        Get or create a Chroma vectorstore for a specific collection.
-        
-        Args:
-            collection_name: Name of the collection (typically PDF ID or unified collection)
-            
-        Returns:
-            Chroma vectorstore instance
-        """
-        if collection_name not in self._vectorstore_cache:
-            self._vectorstore_cache[collection_name] = Chroma(
-                client=self.client,
-                collection_name=collection_name,
-                embedding_function=self.embeddings
-            )
-            logger.info(f"Vectorstore created/loaded for collection: {collection_name}")
-        
-        return self._vectorstore_cache[collection_name]
+    @property
+    def collection(self) -> Collection:
+        """Get the synchronous MongoDB collection used for vectors."""
+        # LangChain's MongoDBAtlasVectorSearch requires a standard PyMongo Collection
+        import os as _os
+        db_name = _os.getenv("MONGODB_DB_NAME", settings.MONGODB_DB_NAME)
+        return self.sync_client[db_name][COLLECTION_PDF_VECTORS]
     
-    def add_documents(
+    def get_vectorstore(self) -> MongoDBAtlasVectorSearch:
+        """
+        Get or create the MongoDBAtlasVectorSearch instance.
+        
+        Returns:
+            MongoDBAtlasVectorSearch instance
+        """
+        if self._vectorstore is None:
+            self._vectorstore = MongoDBAtlasVectorSearch(
+                collection=self.collection,
+                embedding=self.embeddings,
+                index_name=settings.MONGODB_VECTOR_INDEX_NAME,
+                text_key="text",
+                embedding_key="embedding"
+            )
+            logger.info(f"MongoDBAtlasVectorSearch initialized on collection: {COLLECTION_PDF_VECTORS}")
+        
+        return self._vectorstore
+    
+    async def add_documents(
         self,
         documents: List[Document],
-        collection_name: str,
+        source_id: str,
         ids: Optional[List[str]] = None
     ) -> List[str]:
         """
-        Add documents to a ChromaDB collection.
+        Add documents to MongoDB Atlas Vector Search.
+        Automatically tags them with the source_id in metadata for filtering.
         
         Args:
             documents: List of LangChain Document objects with page_content and metadata
-            collection_name: Name of the collection to add documents to
+            source_id: The ID of the PDF to tag these chunks with
             ids: Optional list of document IDs (will auto-generate if not provided)
             
         Returns:
             List of document IDs that were added
         """
-        vectorstore = self.get_vectorstore(collection_name)
+        vectorstore = self.get_vectorstore()
         
+        # Ensure every document has the source_id in its metadata so we can filter later
+        for doc in documents:
+            if "source_id" not in doc.metadata:
+                doc.metadata["source_id"] = source_id
+                
         try:
-            doc_ids = vectorstore.add_documents(documents=documents, ids=ids)
-            logger.info(f"Added {len(documents)} documents to collection '{collection_name}'")
+            # Since we are using a synchronous PyMongo client for LangChain,
+            # we must use the sync add_documents method, but run it in a threadpool so we don't block
+            loop = asyncio.get_running_loop()
+            doc_ids = await loop.run_in_executor(
+                None, 
+                lambda: vectorstore.add_documents(documents=documents, ids=ids)
+            )
+            logger.info(f"Added {len(documents)} documents to MongoDB for source '{source_id}'")
             return doc_ids
         except Exception as e:
-            logger.error(f"Failed to add documents to collection '{collection_name}': {e}")
+            logger.error(f"Failed to add documents for source '{source_id}': {e}")
             raise
     
-    def similarity_search(
+    async def similarity_search(
         self,
         query: str,
-        collection_name: str,
+        source_id: str,
         k: Optional[int] = None,
         filter: Optional[dict] = None
     ) -> List[Document]:
         """
-        Perform similarity search in a ChromaDB collection.
+        Perform similarity search in MongoDB filtered by source_id.
         
         Args:
             query: Query text to search for
-            collection_name: Name of the collection to search in
+            source_id: The ID of the PDF to search within
             k: Number of results to return (defaults to settings.VECTOR_STORE_K)
-            filter: Optional metadata filter
+            filter: Additional optional metadata filters
             
         Returns:
             List of Document objects ordered by similarity
         """
-        vectorstore = self.get_vectorstore(collection_name)
+        vectorstore = self.get_vectorstore()
         k = k or settings.VECTOR_STORE_K
         
+        # MongoDB Atlas Vector Search uses specific pre-filter syntax
+        match_filter = {"source_id": {"$eq": source_id}}
+        if filter:
+            match_filter.update(filter)
+            
         try:
-            results = vectorstore.similarity_search(query=query, k=k, filter=filter)
-            logger.info(f"Found {len(results)} results for query in collection '{collection_name}'")
+            # asimilarity_search is only available when backed by an async client.
+            # We are backed by a sync client, so we must use the sync similarity_search in a thread
+            loop = asyncio.get_running_loop()
+            results = await loop.run_in_executor(
+                None,
+                lambda: vectorstore.similarity_search(
+                    query=query, 
+                    k=k, 
+                    pre_filter=match_filter
+                )
+            )
+            logger.info(f"Found {len(results)} results for query in source '{source_id}'")
             return results
         except Exception as e:
-            logger.error(f"Similarity search failed in collection '{collection_name}': {e}")
+            logger.error(f"Similarity search failed in source '{source_id}': {e}")
             raise
     
-    def similarity_search_with_score(
+    async def similarity_search_with_score(
         self,
         query: str,
-        collection_name: str,
+        source_id: str,
         k: Optional[int] = None,
         filter: Optional[dict] = None
     ) -> List[Tuple[Document, float]]:
@@ -145,110 +187,109 @@ class VectorStoreManager:
         
         Args:
             query: Query text to search for
-            collection_name: Name of the collection to search in
+            source_id: The ID of the PDF to search within
             k: Number of results to return (defaults to settings.VECTOR_STORE_K)
             filter: Optional metadata filter
             
         Returns:
             List of (Document, score) tuples ordered by similarity
         """
-        vectorstore = self.get_vectorstore(collection_name)
+        vectorstore = self.get_vectorstore()
         k = k or settings.VECTOR_STORE_K
         
+        match_filter = {"source_id": {"$eq": source_id}}
+        if filter:
+            match_filter.update(filter)
+            
         try:
-            results = vectorstore.similarity_search_with_score(query=query, k=k, filter=filter)
-            logger.info(f"Found {len(results)} results with scores for query in collection '{collection_name}'")
+            loop = asyncio.get_running_loop()
+            results = await loop.run_in_executor(
+                None,
+                lambda: vectorstore.similarity_search_with_score(
+                    query=query, 
+                    k=k, 
+                    pre_filter=match_filter
+                )
+            )
+            logger.info(f"Found {len(results)} results with scores for query in source '{source_id}'")
             return results
         except Exception as e:
-            logger.error(f"Similarity search with score failed in collection '{collection_name}': {e}")
+            logger.error(f"Similarity search with score failed in source '{source_id}': {e}")
             raise
     
-    def delete_collection(self, collection_name: str) -> None:
+    async def delete_source_documents(self, source_id: str) -> None:
         """
-        Delete a ChromaDB collection.
+        Delete all documents belonging to a specific source/PDF.
         
         Args:
-            collection_name: Name of the collection to delete
+            source_id: ID of the source PDF to delete
         """
         try:
-            # Remove from cache if exists
-            if collection_name in self._vectorstore_cache:
-                del self._vectorstore_cache[collection_name]
-            
-            # Delete from ChromaDB
-            self.client.delete_collection(name=collection_name)
-            logger.info(f"Deleted collection: {collection_name}")
+            # Use raw motor client to delete efficiently
+            result = await self.collection.delete_many({"source_id": source_id})
+            logger.info(f"Deleted {result.deleted_count} vector documents for source: {source_id}")
         except Exception as e:
-            logger.error(f"Failed to delete collection '{collection_name}': {e}")
+            logger.error(f"Failed to delete vector documents for source '{source_id}': {e}")
             raise
     
-    def collection_exists(self, collection_name: str) -> bool:
+    async def source_exists(self, source_id: str) -> bool:
         """
-        Check if a collection exists in ChromaDB.
+        Check if any vectors exist for a specific source_id.
         
         Args:
-            collection_name: Name of the collection to check
+            source_id: ID of the source PDF to check
             
         Returns:
-            True if collection exists, False otherwise
+            True if vectors exist, False otherwise
         """
         try:
-            collections = self.client.list_collections()
-            return any(col.name == collection_name for col in collections)
+            count = await self.collection.count_documents({"source_id": source_id}, limit=1)
+            return count > 0
         except Exception as e:
-            logger.error(f"Failed to check collection existence '{collection_name}': {e}")
+            logger.error(f"Failed to check vector existence for source '{source_id}': {e}")
             return False
     
-    def get_collection_count(self, collection_name: str) -> int:
+    async def get_source_document_count(self, source_id: str) -> int:
         """
-        Get the number of documents in a collection.
+        Get the number of vector chunks for a specific source_id.
         
         Args:
-            collection_name: Name of the collection
+            source_id: ID of the source PDF
             
         Returns:
-            Number of documents in the collection
+            Number of vector chunks
         """
         try:
-            vectorstore = self.get_vectorstore(collection_name)
-            collection = vectorstore._collection
-            return collection.count()
+            return await self.collection.count_documents({"source_id": source_id})
         except Exception as e:
-            logger.error(f"Failed to get count for collection '{collection_name}': {e}")
+            logger.error(f"Failed to get vector count for source '{source_id}': {e}")
             return 0
     
-    def list_collections(self) -> List[str]:
+    def as_retriever(self, source_id: str, **kwargs):
         """
-        List all collections in ChromaDB.
-        
-        Returns:
-            List of collection names
-        """
-        try:
-            collections = self.client.list_collections()
-            return [col.name for col in collections]
-        except Exception as e:
-            logger.error(f"Failed to list collections: {e}")
-            return []
-    
-    def as_retriever(self, collection_name: str, **kwargs):
-        """
-        Get a LangChain retriever interface for a collection.
+        Get a LangChain retriever interface pre-filtered for a specific source.
         
         Args:
-            collection_name: Name of the collection
+            source_id: ID of the source PDF
             **kwargs: Additional arguments for retriever configuration
                      (search_type, search_kwargs, etc.)
             
         Returns:
             VectorStoreRetriever instance
         """
-        vectorstore = self.get_vectorstore(collection_name)
+        vectorstore = self.get_vectorstore()
         
         # Set defaults from settings if not provided
         search_type = kwargs.get('search_type', settings.VECTOR_STORE_SEARCH_TYPE)
         search_kwargs = kwargs.get('search_kwargs', {'k': settings.VECTOR_STORE_K})
         
+        # Force pre-filter by source_id so the retriever only returns documents for this PDF
+        base_pre_filter = {"source_id": {"$eq": source_id}}
+        if "pre_filter" in search_kwargs:
+            search_kwargs["pre_filter"].update(base_pre_filter)
+        else:
+            search_kwargs["pre_filter"] = base_pre_filter
+            
         return vectorstore.as_retriever(
             search_type=search_type,
             search_kwargs=search_kwargs

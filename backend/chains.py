@@ -216,19 +216,19 @@ def create_chat_chain_with_history(
 # ============================================================================
 
 def create_rag_chain(
-    collection_name: str,
+    source_id: str,
     model_name: str = "llama3",
     k: int = 3,
     callbacks: Optional[List[BaseCallbackHandler]] = None,
     enable_observability: bool = False
 ):
     """
-    Create a RAG chain using LCEL with ChromaDB retriever.
+    Create a RAG chain using LCEL with MongoDB Atlas Vector Search retriever.
     
     Chain structure: retriever → format_context → prompt | llm | output_parser
     
     Args:
-        collection_name: ChromaDB collection name (PDF identifier)
+        source_id: MongoDB source identifier for filtering
         model_name: Name of the model to use
         k: Number of documents to retrieve
         callbacks: Optional list of callback handlers
@@ -251,7 +251,7 @@ def create_rag_chain(
     # Get retriever from vectorstore manager
     vectorstore_mgr = get_vectorstore_manager()
     retriever = vectorstore_mgr.as_retriever(
-        collection_name=collection_name,
+        source_id=source_id,
         search_kwargs={'k': k}
     )
     
@@ -271,12 +271,12 @@ def create_rag_chain(
     if callbacks:
         chain = chain.with_config(callbacks=callbacks)
     
-    logger.info(f"Created RAG chain for collection: {collection_name}, callbacks: {len(callbacks) if callbacks else 0}")
+    logger.info(f"Created RAG chain for source: {source_id}, callbacks: {len(callbacks) if callbacks else 0}")
     return chain
 
 
 def create_rag_chain_with_history(
-    collection_name: str,
+    source_id: str,
     session_id: str,
     model_name: str = "llama3",
     k: int = 3,
@@ -287,7 +287,7 @@ def create_rag_chain_with_history(
     Create a RAG chain with conversation history.
     
     Args:
-        collection_name: ChromaDB collection name
+        source_id: MongoDB source identifier
         session_id: Session ID for history retrieval
         model_name: Name of the model to use
         k: Number of documents to retrieve
@@ -311,7 +311,7 @@ def create_rag_chain_with_history(
     # Get retriever
     vectorstore_mgr = get_vectorstore_manager()
     retriever = vectorstore_mgr.as_retriever(
-        collection_name=collection_name,
+        source_id=source_id,
         search_kwargs={'k': k}
     )
     
@@ -331,7 +331,7 @@ def create_rag_chain_with_history(
     if callbacks:
         chain = chain.with_config(callbacks=callbacks)
     
-    logger.info(f"Created RAG chain with history for collection: {collection_name}, session: {session_id}, callbacks: {len(callbacks) if callbacks else 0}")
+    logger.info(f"Created RAG chain with history for source: {source_id}, session: {session_id}, callbacks: {len(callbacks) if callbacks else 0}")
     return chain
 
 
@@ -340,7 +340,7 @@ def create_rag_chain_with_history(
 # ============================================================================
 
 def create_multi_pdf_rag_chain(
-    collection_names: List[str],
+    source_ids: List[str],
     model_name: str = "llama3",
     k: int = 2,
     callbacks: Optional[List[BaseCallbackHandler]] = None,
@@ -349,12 +349,12 @@ def create_multi_pdf_rag_chain(
     """
     Create a multi-PDF RAG chain using LCEL.
     
-    Retrieves context from multiple collections and combines them.
+    Retrieves context using independent source_id filters and combines them.
     
     Args:
-        collection_names: List of ChromaDB collection names
+        source_ids: List of MongoDB source identifiers
         model_name: Name of the model to use
-        k: Number of documents to retrieve per collection
+        k: Number of documents to retrieve per source
         callbacks: Optional list of callback handlers
         enable_observability: Auto-create logging/performance callbacks
         
@@ -374,22 +374,22 @@ def create_multi_pdf_rag_chain(
         )
     
     def retrieve_from_multiple(query: str) -> str:
-        """Retrieve and combine context from multiple collections."""
+        """Retrieve and combine context from multiple sources."""
         all_contexts = []
         
-        for col_name in collection_names:
+        for s_id in source_ids:
             try:
                 retriever = vectorstore_mgr.as_retriever(
-                    collection_name=col_name,
+                    source_id=s_id,
                     search_kwargs={'k': k}
                 )
-                docs = retriever.get_relevant_documents(query)
+                docs = retriever.invoke(query)
                 if docs:
                     context = format_docs(docs)
                     # Add source identifier
-                    all_contexts.append(f"Context from {col_name}:\n{context}")
+                    all_contexts.append(f"Context from {s_id}:\n{context}")
             except Exception as e:
-                logger.warning(f"Failed to retrieve from {col_name}: {e}")
+                logger.warning(f"Failed to retrieve from source {s_id}: {e}")
                 continue
         
         return "\n\n--\n\n".join(all_contexts) if all_contexts else "No context found."
@@ -410,12 +410,12 @@ def create_multi_pdf_rag_chain(
     if callbacks:
         chain = chain.with_config(callbacks=callbacks)
     
-    logger.info(f"Created multi-PDF RAG chain for {len(collection_names)} collections, callbacks: {len(callbacks) if callbacks else 0}")
+    logger.info(f"Created multi-PDF RAG chain for {len(source_ids)} sources, callbacks: {len(callbacks) if callbacks else 0}")
     return chain
 
 
 def create_multi_pdf_rag_chain_with_history(
-    collection_names: List[str],
+    source_ids: List[str],
     session_id: str,
     model_name: str = "llama3",
     k: int = 2,
@@ -426,10 +426,10 @@ def create_multi_pdf_rag_chain_with_history(
     Create a multi-PDF RAG chain with conversation history.
     
     Args:
-        collection_names: List of ChromaDB collection names
+        source_ids: List of MongoDB source identifiers
         session_id: Session ID for history retrieval
         model_name: Name of the model to use
-        k: Number of documents to retrieve per collection
+        k: Number of documents to retrieve per source
         callbacks: Optional list of callback handlers
         enable_observability: Auto-create logging/performance callbacks
         
@@ -449,22 +449,22 @@ def create_multi_pdf_rag_chain_with_history(
         )
     
     def retrieve_from_multiple(inputs: Dict) -> str:
-        """Retrieve and combine context from multiple collections."""
+        """Retrieve and combine context from multiple sources."""
         query = inputs.get("input", "")
         all_contexts = []
         
-        for col_name in collection_names:
+        for s_id in source_ids:
             try:
                 retriever = vectorstore_mgr.as_retriever(
-                    collection_name=col_name,
+                    source_id=s_id,
                     search_kwargs={'k': k}
                 )
                 docs = retriever.invoke(query)
                 if docs:
                     context = format_docs(docs)
-                    all_contexts.append(f"Context from {col_name}:\n{context}")
+                    all_contexts.append(f"Context from {s_id}:\n{context}")
             except Exception as e:
-                logger.warning(f"Failed to retrieve from {col_name}: {e}")
+                logger.warning(f"Failed to retrieve from {s_id}: {e}")
                 continue
         
         return "\n\n--\n\n".join(all_contexts) if all_contexts else "No context found."
@@ -496,8 +496,8 @@ def create_multi_pdf_rag_chain_with_history(
 def get_chain(
     chain_type: str,
     model_name: str = "llama3",
-    collection_name: Optional[str] = None,
-    collection_names: Optional[List[str]] = None,
+    source_id: Optional[str] = None,
+    source_ids: Optional[List[str]] = None,
     session_id: Optional[str] = None,
     k: int = 3,
     callbacks: Optional[List[BaseCallbackHandler]] = None,
@@ -509,8 +509,8 @@ def get_chain(
     Args:
         chain_type: Type of chain ('chat', 'rag', 'multi_rag')
         model_name: Name of the model to use
-        collection_name: Single collection name (for RAG)
-        collection_names: Multiple collection names (for multi-RAG)
+        source_id: Single source ID (for RAG)
+        source_ids: Multiple source IDs (for multi-RAG)
         session_id: Session ID for history (optional)
         k: Number of documents to retrieve
         callbacks: Optional list of callback handlers
@@ -526,20 +526,20 @@ def get_chain(
             return create_chat_chain(model_name, callbacks, enable_observability)
     
     elif chain_type == "rag":
-        if not collection_name:
-            raise ValueError("collection_name required for RAG chain")
+        if not source_id:
+            raise ValueError("source_id required for RAG chain")
         if session_id:
-            return create_rag_chain_with_history(collection_name, session_id, model_name, k, callbacks, enable_observability)
+            return create_rag_chain_with_history(source_id, session_id, model_name, k, callbacks, enable_observability)
         else:
-            return create_rag_chain(collection_name, model_name, k, callbacks, enable_observability)
+            return create_rag_chain(source_id, model_name, k, callbacks, enable_observability)
     
     elif chain_type == "multi_rag":
-        if not collection_names:
-            raise ValueError("collection_names required for multi-RAG chain")
+        if not source_ids:
+            raise ValueError("source_ids required for multi-RAG chain")
         if session_id:
-            return create_multi_pdf_rag_chain_with_history(collection_names, session_id, model_name, k, callbacks, enable_observability)
+            return create_multi_pdf_rag_chain_with_history(source_ids, session_id, model_name, k, callbacks, enable_observability)
         else:
-            return create_multi_pdf_rag_chain(collection_names, model_name, k, callbacks, enable_observability)
+            return create_multi_pdf_rag_chain(source_ids, model_name, k, callbacks, enable_observability)
     
     else:
         raise ValueError(f"Unknown chain type: {chain_type}")
