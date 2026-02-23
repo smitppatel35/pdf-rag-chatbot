@@ -139,16 +139,27 @@ class MongoDBManager:
                 partialFilterExpression={"session_id": {"$type": "string"}}
             )
             await self._db.sessions.create_index("user_id", background=True)
-            await self._db.sessions.create_index("created_at", background=True)
-            # TTL index: MongoDB will automatically delete session documents older
-            # than 30 days. This keeps the sessions collection lean without any
-            # application-level cleanup job.
-            await self._db.sessions.create_index(
-                "created_at",
-                name="sessions_ttl",
-                expireAfterSeconds=60 * 60 * 24 * 30,  # 30 days
-                background=True
-            )
+            # TTL index: MongoDB automatically deletes session documents older than
+            # 30 days. We must drop any pre-existing plain `created_at` index first
+            # because MongoDB won't let a TTL index coexist on the same key.
+            try:
+                await self._db.sessions.drop_index("created_at_1")
+                logger.info("Dropped legacy plain 'created_at_1' index on sessions to make room for TTL index")
+            except Exception:
+                pass  # Index doesn't exist or already dropped — that's fine
+            try:
+                await self._db.sessions.create_index(
+                    "created_at",
+                    name="sessions_ttl",
+                    expireAfterSeconds=60 * 60 * 24 * 30,  # 30 days
+                    background=True
+                )
+                logger.info("Sessions TTL index (30 days) created successfully")
+            except Exception as ttl_err:
+                # Non-fatal: TTL index already exists with correct settings, or
+                # there's another conflict. Log and continue — sessions will still
+                # work; they just won't auto-expire via MongoDB TTL.
+                logger.warning(f"Could not create sessions TTL index (non-fatal): {ttl_err}")
 
             # Create indexes for pdf metadata
             await self._db.pdf_metadata.create_index("pdf_id", unique=True)
