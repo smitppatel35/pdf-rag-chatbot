@@ -110,11 +110,6 @@ class Settings(BaseSettings):
     # FILE UPLOAD SETTINGS
     # ========================================================================
     
-    UPLOAD_DIR: str = Field(
-        default="./uploads",
-        env="UPLOAD_DIR",
-        description="Directory for uploaded PDF files"
-    )
     MAX_UPLOAD_SIZE_MB: int = Field(
         default=50,
         env="MAX_UPLOAD_SIZE_MB",
@@ -125,6 +120,15 @@ class Settings(BaseSettings):
         description="Allowed file extensions for upload"
     )
     
+    # ========================================================================
+    # AWS S3 SETTINGS
+    # ========================================================================
+    
+    AWS_ACCESS_KEY_ID: Optional[str] = Field(default=None, env="AWS_ACCESS_KEY_ID")
+    AWS_SECRET_ACCESS_KEY: Optional[str] = Field(default=None, env="AWS_SECRET_ACCESS_KEY")
+    AWS_REGION: str = Field(default="us-east-1", env="AWS_REGION")
+    AWS_S3_BUCKET_NAME: Optional[str] = Field(default=None, env="AWS_S3_BUCKET_NAME")
+
     # ========================================================================
     # PODCAST OUTPUT SETTINGS
     # ========================================================================
@@ -294,7 +298,7 @@ def get_settings() -> Settings:
         _settings = Settings()
         logger.info(f"Settings initialized: Environment={_settings.ENVIRONMENT}")
         logger.debug(f"Database: {_settings.MONGODB_URI}")
-        logger.debug(f"Upload directory: {_settings.UPLOAD_DIR}")
+        logger.debug(f"S3 Bucket: {_settings.AWS_S3_BUCKET_NAME}")
     
     return _settings
 
@@ -326,23 +330,16 @@ def _safe_makedirs(path: str) -> str:
 
 
 def create_upload_directories():
-    """Create necessary upload and output directories.
+    """Create necessary output directories.
     On read-only filesystems (Vercel Lambda), falls back to /tmp subdirectories
     and patches the settings object so the rest of the app uses the correct path.
     """
     settings = get_settings()
 
-    upload_dir = _safe_makedirs(settings.UPLOAD_DIR)
     podcast_dir = _safe_makedirs(settings.PODCAST_OUTPUT_DIR)
     log_dir = _safe_makedirs("./logs")
 
     # Patch settings if paths were redirected to /tmp
-    if upload_dir != settings.UPLOAD_DIR:
-        settings.UPLOAD_DIR = upload_dir
-        logger.info(f"Upload dir remapped to: {upload_dir} (read-only filesystem)")
-    else:
-        logger.info(f"Directory ready: {upload_dir}")
-
     if podcast_dir != settings.PODCAST_OUTPUT_DIR:
         settings.PODCAST_OUTPUT_DIR = podcast_dir
         logger.info(f"Podcast dir remapped to: {podcast_dir} (read-only filesystem)")

@@ -32,3 +32,6 @@ pymongo[srv]
 # Planned features (podcast/TTS — uncomment when implementing)
 # Pillow>=10.0.0
 # pytesseract>=0.3.10
+
+# AWS S3 integration
+aioboto3

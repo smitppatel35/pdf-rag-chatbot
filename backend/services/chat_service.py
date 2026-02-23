@@ -134,6 +134,24 @@ async def send_chat(
         if not chat_session_data:
             raise ThreadNotFoundError()
 
+        # Download active sources from S3 to /tmp on demand
+        import os
+        from s3_manager import s3_manager
+        
+        for source in chat_session_data.get("sources", []):
+            if source.get("source_id") in request.active_source_ids:
+                path_or_s3 = source.get("s3_key") or source.get("filepath")
+                local_path = path_or_s3
+                
+                if path_or_s3 and path_or_s3.startswith("pdfs/"):
+                    local_path = f"/tmp/{source.get('source_id')}.pdf"
+                    if not os.path.exists(local_path):
+                        logger.info(f"Downloading source {source.get('source_id')} from S3 for chat")
+                        await s3_manager.download_pdf_from_s3(path_or_s3, local_path)
+                
+                # Update in-memory dict so process_chat_completion uses the local path
+                source["filepath"] = local_path
+
         # get async generator (do NOT await)
         completion_generator = process_chat_completion(
             request.user_input,

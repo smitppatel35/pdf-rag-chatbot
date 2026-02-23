@@ -8,7 +8,7 @@ from datetime import datetime
 
 from config import Settings, get_settings
 from .exceptions import InvalidSessionError, ThreadNotFoundError
-from .utils import validate_session, ensure_upload_dir
+from .utils import validate_session
 from db_manager import (
     add_source_to_chat_session,
     add_filename_to_uploaded_list,
@@ -23,6 +23,7 @@ from db_manager import (
 import uuid
 from logging_config import get_logger, log_exceptions
 from callbacks import LoggingCallbackHandler
+from s3_manager import s3_manager
 
 logger = get_logger(__name__)
 router = APIRouter(tags=["PDF Operations"])
@@ -135,21 +136,21 @@ async def upload_pdf(
             raise ThreadNotFoundError()
 
         source_id = str(uuid.uuid4())
-        logger.debug(f"Creating upload directory for source: {source_id}")
-        upload_dir = ensure_upload_dir(
-            user_id, chat_session_id, source_id, settings.UPLOAD_DIR
-        )
         
-        file_path = upload_dir / file.filename
-        logger.debug(f"Saving file to: {file_path}")
+        # Read file bytes directly for S3 upload
+        file_bytes = await file.read()
         
-        with file_path.open("wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+        # S3 key structure avoids local filesystem collisions
+        s3_key = f"pdfs/{user_id}/{chat_session_id}/{source_id}/{file.filename}"
+        
+        # Upload directly to S3
+        await s3_manager.upload_pdf_to_s3(file_bytes, s3_key)
 
         new_source = {
             "source_id": source_id,
             "filename": file.filename,
-            "filepath": str(file_path),
+            "s3_key": s3_key,  # Replaces filepath
+            "filepath": "",    # Kept empty for backward compat with old schema strictly requiring the field (if any)
             "related_questions": [],
             "mindmap": {"path": None, "chat_messages": []},
             "podcast": {"data": None}

@@ -46,10 +46,18 @@ async def generate_mindmap(
             None
         )
         
-        if not source_data or not source_data.get("filepath"):
+        path_or_s3 = source_data.get("s3_key") or source_data.get("filepath")
+        if not path_or_s3:
             raise SourceNotFoundError()
 
-        pdf_path = source_data["filepath"]
+        local_path = path_or_s3
+        if path_or_s3.startswith("pdfs/"):
+            local_path = f"/tmp/{request.source_id}.pdf"
+            if not os.path.exists(local_path):
+                logger.info(f"Downloading source {request.source_id} from S3 for mindmap")
+                await s3_manager.download_pdf_from_s3(path_or_s3, local_path)
+
+        pdf_path = local_path
         estimated_time = estimate_mindmap_generation_time(pdf_path)
         logger.info(f"Estimated generation time: {estimated_time} seconds")
 

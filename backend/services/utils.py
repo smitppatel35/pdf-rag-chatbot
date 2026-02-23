@@ -51,15 +51,6 @@ async def validate_session(session_id: str) -> str:
         detail="Session expired or invalid. Please log in again."
     )
 
-def ensure_upload_dir(user_id: str, thread_id: str, source_id: str, base_dir: Path) -> Path:
-    """Ensure upload directory exists and return path"""
-    # Convert to Path if it's a string
-    if isinstance(base_dir, str):
-        base_dir = Path(base_dir)
-    upload_dir = base_dir / user_id / thread_id / source_id
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    return upload_dir
-
 async def handle_service_error(func: callable, *args, **kwargs) -> Dict[str, Any]:
     """Generic error handler for service functions"""
     try:
