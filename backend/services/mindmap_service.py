@@ -19,7 +19,6 @@ from ai_engine import (
 )
 from output_parsers import MindmapOutputParser, MindmapOutput
 from callbacks import create_callback_manager
-from auth import active_sessions
 from logging_config import get_logger, log_exceptions
 
 logger = get_logger(__name__)
@@ -35,7 +34,7 @@ async def generate_mindmap(
     logger.info(f"Generating mindmap for chat session: {request.chat_session_id}, source: {request.source_id}")
     
     try:
-        user_id = await validate_session(request.session_id, active_sessions)
+        user_id = await validate_session(request.session_id)
         chat_session_data = await get_chat_session_by_id(request.chat_session_id, user_id)
         
         if not chat_session_data:

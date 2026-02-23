@@ -140,6 +140,15 @@ class MongoDBManager:
             )
             await self._db.sessions.create_index("user_id", background=True)
             await self._db.sessions.create_index("created_at", background=True)
+            # TTL index: MongoDB will automatically delete session documents older
+            # than 30 days. This keeps the sessions collection lean without any
+            # application-level cleanup job.
+            await self._db.sessions.create_index(
+                "created_at",
+                name="sessions_ttl",
+                expireAfterSeconds=60 * 60 * 24 * 30,  # 30 days
+                background=True
+            )
 
             # Create indexes for pdf metadata
             await self._db.pdf_metadata.create_index("pdf_id", unique=True)
@@ -214,6 +223,16 @@ async def update_session(session_id: str, update: Dict[str, Any]) -> None:
     update["updated_at"] = datetime.utcnow().isoformat()
     await _db_manager.db[COLLECTION_SESSIONS].update_one({"session_id": session_id}, {"$set": update})
     logger.info(f"Session updated: {session_id}")
+
+
+@log_exceptions
+async def invalidate_all_sessions_by_user(user_id: str) -> None:
+    """Invalidate all active sessions for a given user in MongoDB."""
+    result = await _db_manager.db[COLLECTION_SESSIONS].update_many(
+        {"user_id": user_id, "active": True},
+        {"$set": {"active": False, "updated_at": datetime.utcnow().isoformat()}}
+    )
+    logger.info(f"Invalidated {result.modified_count} session(s) for user: {user_id}")
 
 # PDF METADATA FUNCTIONS
 @log_exceptions

@@ -23,39 +23,29 @@ class RequestSimulator:
     async def json(self) -> Dict[str, Any]:
         return self._json
 
-async def validate_session(session_id: str, active_sessions: Dict) -> str:
-    """Validate session and return user_id. Checks both in-memory and database."""
+async def validate_session(session_id: str) -> str:
+    """Validate session and return user_id. Reads exclusively from MongoDB.
+
+    Safe for Vercel Lambda — no in-memory state that resets on cold-start.
+    """
     if not session_id:
         logger.warning("Session validation failed: No session_id provided")
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid session"
         )
-    
-    # First check in-memory sessions (fast path)
-    if session_id in active_sessions:
-        logger.debug(f"Session found in memory: {session_id[:20]}...")
-        return active_sessions[session_id]["user_id"]
-    
-    # Fallback to database check (for sessions that survived server restart)
-    logger.debug(f"Session not in memory, checking database: {session_id[:20]}...")
+
     try:
         from db_manager import get_session
         session_data = await get_session(session_id)
-        if session_data and session_data.get("user_id"):
-            logger.info(f"Session found in database, re-populating cache: {session_id[:20]}...")
-            # Re-populate in-memory cache
-            active_sessions[session_id] = {
-                "user_id": session_data["user_id"],
-                "created_at": session_data.get("created_at", datetime.utcnow().isoformat())
-            }
+        if session_data and session_data.get("active") and session_data.get("user_id"):
+            logger.debug(f"Session validated from DB: {session_id[:20]}...")
             return session_data["user_id"]
         else:
-            logger.warning(f"Session not found in database: {session_id[:20]}...")
+            logger.warning(f"Session not found or inactive in DB: {session_id[:20]}...")
     except Exception as e:
         logger.error(f"Error validating session from database: {e}")
-    
-    logger.warning(f"Session validation failed for: {session_id[:20]}...")
+
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
         detail="Session expired or invalid. Please log in again."

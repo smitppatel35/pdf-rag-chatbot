@@ -1,9 +1,8 @@
 import os
 import uuid
 from datetime import datetime, timedelta
-from typing import Dict, Optional, Any
-from fastapi import APIRouter, HTTPException, status, Depends
-# run_in_threadpool is not used here after DB helpers migrated to async
+from typing import Optional, Any
+from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 import bcrypt
 from logging_config import get_logger, log_exceptions
@@ -13,6 +12,8 @@ from db_manager import (
     update_user_last_login,
     create_session as create_session_in_db,
     get_session as get_session_from_db,
+    update_session as update_session_in_db,
+    invalidate_all_sessions_by_user as invalidate_all_sessions_by_user_in_db,
     COLLECTION_USERS
 )
 
@@ -23,11 +24,10 @@ logger = get_logger(__name__)
 # ============================================================================
 
 # NOTE: We're using stateful sessions only (no JWT). Session persistence is
-# handled by the `sessions` collection via `db_manager`.
-
-# Active sessions in memory (for quick lookup)
-# In production, use Redis or persistent store
-active_sessions: Dict[str, Dict[str, Any]] = {}
+# handled entirely by the `sessions` collection in MongoDB via `db_manager`.
+# There is NO in-memory session cache — all lookups hit MongoDB directly so
+# that Vercel Lambda cold-starts (which reset module-level state) do not
+# cause 401 errors.
 
 # ============================================================================
 # PYDANTIC MODELS
@@ -166,9 +166,9 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 # ============================================================================
 
 async def create_session(user_id: str) -> str:
-    """Create a new session for user (stores both in-memory and database)"""
+    """Create a new session for user and persist it to MongoDB."""
     session_id = str(uuid.uuid4())
-    
+
     session_data = {
         "session_id": session_id,
         "user_id": user_id,
@@ -176,105 +176,65 @@ async def create_session(user_id: str) -> str:
         "last_activity": datetime.utcnow().isoformat(),
         "active": True
     }
-    
-    # Store in database FIRST — on Vercel Lambda, in-memory state doesn't
-    # survive across requests, so the DB record is the source of truth.
+
     try:
         await create_session_in_db(session_data)
     except Exception as e:
         logger.error(f"CRITICAL: Failed to persist session to database: {e}", exc_info=True)
-        # Don't return a session that only lives in memory — it would
-        # immediately 401 on the next request (new Lambda invocation).
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Login failed: could not create session. Please try again."
         )
-    
-    # Also cache in memory for the duration of this Lambda invocation (fast path)
-    active_sessions[session_id] = session_data
-    
+
     logger.info(f"Session created: {session_id} for user: {user_id}")
     return session_id
-
-
-def get_session(session_id: str) -> Optional[Dict[str, Any]]:
-    """Get session details"""
-    return active_sessions.get(session_id)
 
 
 async def validate_session(session_id: str) -> Optional[str]:
     """Validate session and return user_id if valid.
 
-    Checks in-memory cache first (fast path), then falls back to MongoDB.
-    This ensures sessions survive Lambda cold starts on Vercel.
+    Reads exclusively from MongoDB — safe across Vercel Lambda cold-starts
+    because there is no in-memory state that can be lost between invocations.
     """
-    # Fast path: in-memory cache
-    session = active_sessions.get(session_id)
-    if session is not None:
-        if not session.get("active"):
-            logger.warning(f"Session is inactive: {session_id}")
-            return None
-        session["last_activity"] = datetime.utcnow().isoformat()
-        return session.get("user_id")
+    if not session_id:
+        return None
 
-    # Slow path: look up in MongoDB (handles server restarts + Lambda cold starts)
-    logger.debug(f"Session not in memory, checking DB: {session_id[:20]}...")
     try:
-        from db_manager import get_session as get_session_from_db
         session_data = await get_session_from_db(session_id)
-        if session_data and session_data.get("user_id"):
-            # Re-populate in-memory cache for subsequent requests in same invocation
-            active_sessions[session_id] = {
-                "user_id": session_data["user_id"],
-                "active": True,
-                "created_at": session_data.get("created_at", datetime.utcnow().isoformat()),
-                "last_activity": datetime.utcnow().isoformat(),
-            }
-            logger.info(f"Session restored from DB: {session_id[:20]}...")
+        if session_data and session_data.get("active") and session_data.get("user_id"):
+            # Optionally update last_activity — fire-and-forget style to keep
+            # the hot path fast (don't await, so it doesn't block the response).
+            try:
+                await update_session_in_db(
+                    session_id, {"last_activity": datetime.utcnow().isoformat()}
+                )
+            except Exception:
+                pass  # Non-fatal; session is still valid
+            logger.debug(f"Session validated from DB: {session_id[:20]}...")
             return session_data["user_id"]
     except Exception as e:
         logger.error(f"Error validating session from DB: {e}")
 
-    logger.warning(f"Session not found: {session_id}")
+    logger.warning(f"Session not found or inactive: {session_id[:20]}...")
     return None
 
 
-def invalidate_session(session_id: str) -> None:
-    """Invalidate/logout session"""
-    if session_id in active_sessions:
-        active_sessions[session_id]["active"] = False
-        logger.info(f"Session invalidated: {session_id}")
+async def invalidate_session(session_id: str) -> None:
+    """Invalidate/logout a single session in MongoDB."""
+    try:
+        await update_session_in_db(session_id, {"active": False})
+        logger.info(f"Session invalidated in DB: {session_id[:20]}...")
+    except Exception as e:
+        logger.error(f"Failed to invalidate session in DB: {e}")
 
 
-def invalidate_all_user_sessions(user_id: str) -> None:
-    """Invalidate all sessions for a user (logout all devices)"""
-    invalidated_count = 0
-    for session_id, session_data in active_sessions.items():
-        if session_data.get("user_id") == user_id:
-            session_data["active"] = False
-            invalidated_count += 1
-    
-    logger.info(f"Invalidated {invalidated_count} sessions for user: {user_id}")
-
-
-def cleanup_old_sessions(max_age_hours: int = 24) -> int:
-    """Remove old inactive sessions"""
-    cutoff_time = datetime.utcnow() - timedelta(hours=max_age_hours)
-    sessions_to_remove = []
-    
-    for session_id, session_data in active_sessions.items():
-        if not session_data.get("active"):
-            created_at = datetime.fromisoformat(session_data.get("created_at", ""))
-            if created_at < cutoff_time:
-                sessions_to_remove.append(session_id)
-    
-    for session_id in sessions_to_remove:
-        del active_sessions[session_id]
-    
-    if sessions_to_remove:
-        logger.info(f"Cleaned up {len(sessions_to_remove)} old sessions")
-    
-    return len(sessions_to_remove)
+async def invalidate_all_user_sessions(user_id: str) -> None:
+    """Invalidate all sessions for a user (logout all devices) in MongoDB."""
+    try:
+        await invalidate_all_sessions_by_user_in_db(user_id)
+        logger.info(f"All sessions invalidated in DB for user: {user_id}")
+    except Exception as e:
+        logger.error(f"Failed to invalidate all sessions for user {user_id}: {e}")
 
 
 # ============================================================================
@@ -424,7 +384,7 @@ async def logout(request: UserLogoutRequest):
     """Logout user and invalidate session"""
     session_id = request.session_id
     logger.info(f"Logout attempt for session: {session_id}")
-    
+
     try:
         # Validate session exists
         user_id = await validate_session(session_id)
@@ -433,16 +393,16 @@ async def logout(request: UserLogoutRequest):
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid session"
             )
-        
-        # Invalidate session
-        invalidate_session(session_id)
+
+        # Invalidate session in MongoDB
+        await invalidate_session(session_id)
         logger.info(f"User logged out: {user_id}")
-        
+
         return {
             "status": "success",
             "message": "Logged out successfully"
         }
-    
+
     except HTTPException:
         raise
     except Exception as e:
@@ -459,7 +419,7 @@ async def logout_all(request: UserLogoutRequest):
     """Logout from all devices (invalidate all user sessions)"""
     session_id = request.session_id
     logger.info(f"Logout all attempt for session: {session_id}")
-    
+
     try:
         # Validate session exists
         user_id = await validate_session(session_id)
@@ -468,16 +428,16 @@ async def logout_all(request: UserLogoutRequest):
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid session"
             )
-        
-        # Invalidate all user sessions
-        invalidate_all_user_sessions(user_id)
+
+        # Invalidate all user sessions in MongoDB
+        await invalidate_all_user_sessions(user_id)
         logger.info(f"User logged out from all devices: {user_id}")
-        
+
         return {
             "status": "success",
             "message": "Logged out from all devices successfully"
         }
-    
+
     except HTTPException:
         raise
     except Exception as e:
@@ -672,7 +632,7 @@ async def auth_health():
     """Health check endpoint"""
     return {
         "status": "healthy",
-        "active_sessions": len([s for s in active_sessions.values() if s.get("active")])
+        "session_store": "mongodb"
     }
 
 

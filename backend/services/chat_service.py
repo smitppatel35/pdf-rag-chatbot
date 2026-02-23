@@ -31,7 +31,7 @@ from callbacks import (
     LoggingCallbackHandler
 )
 from output_parsers import TitleOutputParser, ChatTitle
-from auth import active_sessions
+
 import uuid
 from logging_config import get_logger, log_exceptions
 
@@ -128,7 +128,7 @@ async def send_chat(
     logger.info(f"Processing chat request for chat session: {request.chat_session_id}; model={request.model}")
 
     try:
-        user_id = await validate_session(request.session_id, active_sessions)
+        user_id = await validate_session(request.session_id)
         chat_session_data = await get_chat_session_by_id(request.chat_session_id, user_id)
 
         if not chat_session_data:
@@ -221,7 +221,7 @@ async def get_chat_sessions(
     limit: int = 50,
 ):
     """Get all chat sessions for the authenticated user, sorted by most recent."""
-    user_id = await validate_session(session_id, active_sessions)
+    user_id = await validate_session(session_id)
     sessions = await get_user_chat_session_list(user_id, limit=limit)
     total = await get_user_chat_session_count(user_id)
 
@@ -244,7 +244,7 @@ async def get_chat_history(
     limit: int = 50,
 ):
     """Get paginated message history for a specific chat session."""
-    user_id = await validate_session(session_id, active_sessions)
+    user_id = await validate_session(session_id)
 
     # Verify the session belongs to this user
     chat_session = await get_chat_session_by_id(chat_session_id, user_id)

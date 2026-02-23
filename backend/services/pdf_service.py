@@ -20,7 +20,6 @@ from db_manager import (
     mark_chat_session_as_deleted,
     rename_chat_session_title
 )
-from auth import active_sessions
 import uuid
 from logging_config import get_logger, log_exceptions
 from callbacks import LoggingCallbackHandler
@@ -38,7 +37,7 @@ async def create_chat_session(
     logger.info(f"Creating new chat session for session: {session_id}")
     
     try:
-        user_id = await validate_session(session_id, active_sessions)
+        user_id = await validate_session(session_id)
         chat_session_id = str(uuid.uuid4())
         
         new_chat_session = {
@@ -74,7 +73,7 @@ async def get_chat_session(
     logger.info(f"Fetching chat session: {chat_session_id}")
     
     try:
-        user_id = await validate_session(session_id, active_sessions)
+        user_id = await validate_session(session_id)
         chat_session_data = await get_chat_session_by_id(chat_session_id, user_id)
         
         if not chat_session_data:
@@ -125,7 +124,7 @@ async def upload_pdf(
     
     try:
         logger.debug(f"Validating session: {session_id[:20]}...")
-        user_id = await validate_session(session_id, active_sessions)
+        user_id = await validate_session(session_id)
         logger.debug(f"Session valid, user_id: {user_id}")
         
         logger.debug(f"Fetching chat session: {chat_session_id}")
@@ -193,7 +192,7 @@ async def get_all_sessions(
     limit: int = 50,
 ):
     """Get all chat sessions for the authenticated user, sorted by most recent."""
-    user_id = await validate_session(session_id, active_sessions)
+    user_id = await validate_session(session_id)
     sessions = await get_user_chat_session_list(user_id, limit=limit)
     total = await get_user_chat_session_count(user_id)
 
@@ -214,7 +213,7 @@ async def delete_chat_session(
     session_id: str,
 ):
     """Soft-delete a chat session (marks as deleted, data is retained)."""
-    user_id = await validate_session(session_id, active_sessions)
+    user_id = await validate_session(session_id)
     chat_session = await get_chat_session_by_id(chat_session_id, user_id)
     if not chat_session:
         raise HTTPException(status_code=404, detail="Chat session not found")
@@ -232,7 +231,7 @@ async def rename_session(
     new_title: str,
 ):
     """Rename a chat session."""
-    user_id = await validate_session(session_id, active_sessions)
+    user_id = await validate_session(session_id)
     chat_session = await get_chat_session_by_id(chat_session_id, user_id)
     if not chat_session:
         raise HTTPException(status_code=404, detail="Chat session not found")
