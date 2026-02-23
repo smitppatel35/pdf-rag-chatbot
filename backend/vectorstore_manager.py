@@ -252,7 +252,7 @@ class VectorStoreManager:
             True if vectors exist, False otherwise
         """
         try:
-            count = await self.collection.count_documents({"source_id": source_id}, limit=1)
+            count = self.collection.count_documents({"source_id": source_id}, limit=1)
             return count > 0
         except Exception as e:
             logger.error(f"Failed to check vector existence for source '{source_id}': {e}")
@@ -269,7 +269,7 @@ class VectorStoreManager:
             Number of vector chunks
         """
         try:
-            return await self.collection.count_documents({"source_id": source_id})
+            return self.collection.count_documents({"source_id": source_id})
         except Exception as e:
             logger.error(f"Failed to get vector count for source '{source_id}': {e}")
             return 0

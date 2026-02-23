@@ -508,7 +508,7 @@ def create_multi_pdf_rag_chain_with_history(
     if callbacks:
         chain = chain.with_config(callbacks=callbacks)
     
-    logger.info(f"Created multi-PDF RAG chain with history for {len(collection_names)} collections, session: {session_id}, callbacks: {len(callbacks) if callbacks else 0}")
+    logger.info(f"Created multi-PDF RAG chain with history for {len(source_ids)} collections, session: {session_id}, callbacks: {len(callbacks) if callbacks else 0}")
     return chain
 
 
